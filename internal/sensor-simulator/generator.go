@@ -15,17 +15,17 @@ type SensorService struct {
 	publisher rabbitmq.IPublisher
 }
 
-func NewSensorService(publisher rabbitmq.IPublisher) *SensorService {
+func NewDataGenerator(publisher rabbitmq.IPublisher) *SensorService {
 	return &SensorService{publisher: publisher}
 }
-func (s *SensorService) StartPublishing(ctx context.Context, interval time.Duration) {
+func (s *SensorService) StartPublishing(ctx context.Context, interval time.Duration, sensorID, fieldID string) {
 	for {
 		select {
 		case <-ctx.Done():
 			s.publisher.Close()
 			return
 		case <-time.After(interval):
-			msgBytes, err := GenerateSoilMoisture("sensor1")
+			msgBytes, err := GenerateSoilMoisture(fieldID, sensorID)
 
 			// Create a message based on the generated moisture data
 			message := string(msgBytes)
@@ -39,7 +39,7 @@ func (s *SensorService) StartPublishing(ctx context.Context, interval time.Durat
 	}
 }
 
-func GenerateSoilMoisture(sensorID string) ([]byte, error) {
+func GenerateSoilMoisture(fieldID, sensorID string) ([]byte, error) {
 	// Seed the random number generator to get different results each time
 	rand.Seed(time.Now().UnixNano())
 
@@ -68,6 +68,7 @@ func GenerateSoilMoisture(sensorID string) ([]byte, error) {
 		log.Printf("Moisture level '%d' generated", moistureLevel)
 
 		data := model.SensorData{
+			FieldID:   fieldID,
 			SensorID:  sensorID,
 			Moisture:  moistureLevel,
 			Timestamp: time.Now(),

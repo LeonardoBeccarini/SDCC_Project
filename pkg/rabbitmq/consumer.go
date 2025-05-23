@@ -1,13 +1,14 @@
 package rabbitmq
 
 import (
+	"context"
 	"fmt"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 // IConsumer interface defines the ConsumeMessage method with dependencies T
 type IConsumer[T any] interface {
-	ConsumeMessage(msg interface{})
+	ConsumeMessage(ctx context.Context)
 	SetHandler(handler func(queue string, message mqtt.Message) error)
 }
 
@@ -24,7 +25,7 @@ func NewConsumer(client mqtt.Client, topic string, exchange string, handler func
 	return &Consumer{
 		client:   client,
 		topic:    topic,
-		exchange: exchange, // Set the exchange
+		exchange: exchange,
 		handler:  handler,
 	}
 }
@@ -34,12 +35,16 @@ func (c *Consumer) SetHandler(handler func(queue string, message mqtt.Message) e
 }
 
 // ConsumeMessage subscribes to the topic and processes messages using the handler
-func (c *Consumer) ConsumeMessage(msg interface{}) {
+// It blocks until the context is cancelled.
+func (c *Consumer) ConsumeMessage(ctx context.Context) {
 	token := c.client.Subscribe(
 		c.topic,
 		0,
 		func(client mqtt.Client, message mqtt.Message) {
-			// Call the handler when a message is received
+			if c.handler == nil {
+				fmt.Printf("No handler set for topic %s\n", c.topic)
+				return
+			}
 			err := c.handler(c.topic, message)
 			if err != nil {
 				fmt.Printf("Error handling message: %v\n", err)
@@ -47,10 +52,17 @@ func (c *Consumer) ConsumeMessage(msg interface{}) {
 		},
 	)
 
-	// Check if the subscription was successful
 	if token.Wait() && token.Error() != nil {
 		fmt.Printf("Error subscribing to topic %s: %v\n", c.topic, token.Error())
-	} else {
-		fmt.Printf("Successfully subscribed to topic %s\n", c.topic)
+		return
 	}
+
+	fmt.Printf("Successfully subscribed to topic %s\n", c.topic)
+
+	// Block here until context is done
+	<-ctx.Done()
+
+	// Unsubscribe when exiting to clean up
+	unsubToken := c.client.Unsubscribe(c.topic)
+	unsubToken.Wait()
 }

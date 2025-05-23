@@ -1,21 +1,31 @@
+// cmd/sensor-sim/main.go
 package main
 
 import (
 	"context"
-	sensorSimulator "github.com/LeonardoBeccarini/sdcc_project/internal/sensor-simulator"
-	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
+	"flag"
 	"log"
 	"time"
+
+	sensorSimulator "github.com/LeonardoBeccarini/sdcc_project/internal/sensor-simulator"
+	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 )
 
 func main() {
-	// RabbitMQ configuration for MQTT connection
+	// define flags
+	sensorID := flag.String("sensor-id", "sensor1", "unique sensor identifier")
+	fieldID := flag.String("field-id", "field1", "unique field identifier")
+	clientID := flag.String("client-id", "sensorPublisher1", "MQTT client ID")
+	interval := flag.Duration("interval", 10*time.Second, "publish interval")
+	flag.Parse()
+
+	// inject flags into config
 	cfg := &rabbitmq.RabbitMQConfig{
 		Host:     "localhost",
-		Port:     1883, // Default port for MQTT
+		Port:     1883,
 		User:     "guest",
 		Password: "guest",
-		ClientID: "sensorPublisher1", // Dynamic client IDs for multiple instances
+		ClientID: *clientID,
 		Exchange: "sensor_data",
 		Kind:     "topic",
 	}
@@ -29,7 +39,8 @@ func main() {
 	}
 
 	publisher := rabbitmq.NewPublisher(client, "sensor/data", cfg.Exchange)
-	service := sensorSimulator.NewSensorService(publisher)
+	service := sensorSimulator.NewDataGenerator(publisher)
 
-	service.StartPublishing(ctx, 10*time.Second)
+	// pass sensorID through context or modify StartPublishing to accept it
+	service.StartPublishing(ctx, *interval, *sensorID, *fieldID)
 }
