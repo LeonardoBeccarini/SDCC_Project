@@ -3,41 +3,41 @@ package aggregator
 import (
 	"context"
 	"encoding/json"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model/messages"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"log"
 	"sync"
 	"time"
 
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 )
 
 type DataAggregatorService struct {
-	consumer            rabbitmq.IConsumer[model.SensorData]
+	consumer            rabbitmq.IConsumer[messages.SensorData]
 	publisher           rabbitmq.IPublisher
-	buffer              map[string][]model.SensorData
+	buffer              map[string][]messages.SensorData // key is SensorID now
 	mutex               sync.Mutex
 	aggregationInterval time.Duration
 }
 
-func NewDataAggregatorService(consumer rabbitmq.IConsumer[model.SensorData], publisher rabbitmq.IPublisher, aggregationInterval time.Duration) *DataAggregatorService {
+func NewDataAggregatorService(consumer rabbitmq.IConsumer[messages.SensorData], publisher rabbitmq.IPublisher, aggregationInterval time.Duration) *DataAggregatorService {
 	return &DataAggregatorService{
 		consumer:            consumer,
 		publisher:           publisher,
 		aggregationInterval: aggregationInterval,
-		buffer:              make(map[string][]model.SensorData),
+		buffer:              make(map[string][]messages.SensorData),
 	}
 }
 
 func (d *DataAggregatorService) messageHandler(_ string, message mqtt.Message) error {
-	var sensorData model.SensorData
+	var sensorData messages.SensorData
 	if err := json.Unmarshal(message.Payload(), &sensorData); err != nil {
 		log.Printf("Error unmarshalling sensor data: %v", err)
 		return err
 	}
 
 	d.mutex.Lock()
-	d.buffer[sensorData.FieldID] = append(d.buffer[sensorData.FieldID], sensorData)
+	d.buffer[sensorData.SensorID] = append(d.buffer[sensorData.SensorID], sensorData)
 	d.mutex.Unlock()
 
 	log.Printf("Buffered sensor data: %+v", sensorData)
@@ -45,12 +45,13 @@ func (d *DataAggregatorService) messageHandler(_ string, message mqtt.Message) e
 }
 
 func (d *DataAggregatorService) Start(ctx context.Context) {
-	//inject Handler function into the consumer
+	// Inject the handler
 	d.consumer.SetHandler(d.messageHandler)
-	// Start consuming the messages
-	d.consumer.ConsumeMessage(ctx)
 
-	// Periodic aggregation
+	// Run consumer in background, prima non era in una goroutine--> era bloccante e quindi il ticker non veniva mai raggiunto!!
+	go d.consumer.ConsumeMessage(ctx)
+
+	// Start aggregation ticker
 	ticker := time.NewTicker(d.aggregationInterval)
 	defer ticker.Stop()
 
@@ -60,6 +61,7 @@ func (d *DataAggregatorService) Start(ctx context.Context) {
 			d.publisher.Close()
 			return
 		case <-ticker.C:
+			log.Println("Running aggregation cycle")
 			d.aggregateAndPublish()
 		}
 	}
@@ -69,7 +71,9 @@ func (d *DataAggregatorService) aggregateAndPublish() {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	for fieldID, readings := range d.buffer {
+	log.Println("Running aggregation cycle")
+
+	for sensorID, readings := range d.buffer {
 		if len(readings) == 0 {
 			continue
 		}
@@ -78,12 +82,15 @@ func (d *DataAggregatorService) aggregateAndPublish() {
 			sum += r.Moisture
 		}
 		avg := sum / len(readings)
-		out := model.SensorData{
-			SensorID:  "agg-" + fieldID,
-			FieldID:   fieldID,
-			Moisture:  avg,
-			Timestamp: time.Now(),
+
+		out := messages.SensorData{
+			SensorID:   sensorID,
+			FieldId:    readings[0].FieldId,
+			Moisture:   avg,
+			Aggregated: true,
+			Timestamp:  time.Now(),
 		}
+
 		b, err := json.Marshal(out)
 		if err != nil {
 			log.Printf("marshal err %v", err)
@@ -92,9 +99,10 @@ func (d *DataAggregatorService) aggregateAndPublish() {
 		if err := d.publisher.PublishMessage(string(b)); err != nil {
 			log.Printf("publish err %v", err)
 		} else {
-			log.Printf("Published for %s: %+v", fieldID, out)
+			log.Printf("Published for %s: %+v", sensorID, out)
 		}
-		// reset
-		d.buffer[fieldID] = readings[:0]
+
+		// reset buffer
+		d.buffer[sensorID] = readings[:0]
 	}
 }

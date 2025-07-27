@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/services/device"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 	"log"
@@ -12,11 +12,11 @@ import (
 
 func main() {
 	// Define your fields with their sensors
-	fields := map[string]model.Field{
+	fields := map[string]entities.Field{
 		"field1": {
 			ID:       "field1",
 			CropType: "corn",
-			Sensors: []model.Sensor{
+			Sensors: []entities.Sensor{
 				{ID: "sensor1", FlowRate: 10.0},
 				{ID: "sensor2", FlowRate: 15.0},
 				{ID: "sensor3", FlowRate: 20.5},
@@ -25,7 +25,7 @@ func main() {
 		"field2": {
 			ID:       "field2",
 			CropType: "wheat",
-			Sensors: []model.Sensor{
+			Sensors: []entities.Sensor{
 				{ID: "sensor4", FlowRate: 5.5},
 				{ID: "sensor5", FlowRate: 8.0},
 				{ID: "sensor6", FlowRate: 10.0},

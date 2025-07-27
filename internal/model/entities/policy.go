@@ -1,5 +1,5 @@
 // Package model internal/model/policy.go
-package model
+package entities
 
 // Policy holds your soil‐moisture thresholds.
 type Policy struct {

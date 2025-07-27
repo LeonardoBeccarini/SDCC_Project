@@ -1,79 +1,132 @@
 package sensor_simulator
 
 import (
-	"context"
 	"encoding/json"
-	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
-	"log"
-	"math/rand"
+	"fmt"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model/messages"
+	"io/ioutil"
+	"math"
+	"net/http"
 	"time"
-
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
 )
 
-type SensorService struct {
-	publisher rabbitmq.IPublisher
+// DataGenerator just knows how to fetch & decay soil-moisture.
+type DataGenerator struct {
+	lastMoisture  float64   // 0.0–1.0
+	lastTimestamp time.Time // when lastMoisture was set
+	decayRate     float64   // per second
 }
 
-func NewDataGenerator(publisher rabbitmq.IPublisher) *SensorService {
-	return &SensorService{publisher: publisher}
+// NewDataGenerator returns a generator with your chosen decayRate.
+func NewDataGenerator(decayRate float64) *DataGenerator {
+	return &DataGenerator{decayRate: decayRate}
 }
-func (s *SensorService) StartPublishing(ctx context.Context, interval time.Duration, sensorID, fieldID string) {
-	for {
-		select {
-		case <-ctx.Done():
-			s.publisher.Close()
-			return
-		case <-time.After(interval):
-			msgBytes, err := GenerateSoilMoisture(fieldID, sensorID)
 
-			// Create a message based on the generated moisture data
-			message := string(msgBytes)
+// Next pulls new raw data, applies decay since last timestamp,
+// and returns a complete model.SensorData.
+func (g *DataGenerator) Next(sensor *entities.Sensor) (messages.SensorData, error) {
+	// 1) Hit the SoilGrids API
+	sd, err := fetchSensorData(*sensor)
+	if err != nil {
+		return messages.SensorData{}, err
+	}
 
-			// Publish the generated moisture data as a message
-			err = s.publisher.PublishMessage(message)
-			if err != nil {
-				log.Printf("Error publishing message: %v", err)
+	now := time.Now().UTC()
+	if !g.lastTimestamp.IsZero() {
+		dt := now.Sub(g.lastTimestamp).Seconds()
+		decayed := g.lastMoisture * math.Exp(-g.decayRate*dt)
+		sd.Moisture = int(math.Round(decayed * 100))
+		g.lastMoisture = decayed
+	} else {
+		// first run: seed from API value
+		g.lastMoisture = float64(sd.Moisture) / 100.0
+	}
+	g.lastTimestamp = now
+
+	return sd, nil
+}
+
+// SoilGridResponse matches the actual JSON shape returned by SoilGrids.
+type SoilGridResponse struct {
+	Properties struct {
+		Layers []struct {
+			Name   string `json:"name"`
+			Depths []struct {
+				Range struct {
+					TopDepth    int `json:"top_depth"`    // cm
+					BottomDepth int `json:"bottom_depth"` // cm
+				} `json:"range"`
+				Values struct {
+					Mean float64 `json:"mean"` // mapped units (×10)
+				} `json:"values"`
+			} `json:"depths"`
+		} `json:"layers"`
+	} `json:"properties"`
+}
+
+// fetchSensorData pulls the SoilGrids wv0010 property, picks the
+// thickest layer up to maxDepth, converts to an integer percent,
+// and wraps it in your model.SensorData.
+func fetchSensorData(
+	sensor entities.Sensor,
+) (messages.SensorData, error) {
+
+	// 1. Hit the API asking only for wv0010
+	url := fmt.Sprintf(
+		"https://rest.isric.org/soilgrids/v2.0/properties/query?lat=%f&lon=%f&property=wv0010",
+		sensor.Latitude, sensor.Longitude,
+	)
+	resp, err := http.Get(url)
+	if err != nil {
+		return messages.SensorData{}, fmt.Errorf("HTTP error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := ioutil.ReadAll(resp.Body)
+		return messages.SensorData{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+	}
+
+	// 2. Decode into our struct
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return messages.SensorData{}, fmt.Errorf("read body: %w", err)
+	}
+
+	var sg SoilGridResponse
+	if err := json.Unmarshal(body, &sg); err != nil {
+		return messages.SensorData{}, fmt.Errorf("unmarshal: %w\nJSON: %s", err, string(body))
+	}
+
+	// 3. Find the thickest layer ≤ maxDepth
+	layers := sg.Properties.Layers
+	if len(layers) == 0 {
+		return messages.SensorData{}, fmt.Errorf("no layers in response")
+	}
+	depths := layers[0].Depths
+
+	var bestMean float64
+	var bestThick int
+	for _, d := range depths {
+		if d.Range.BottomDepth <= sensor.MaxDepth {
+			thick := d.Range.BottomDepth - d.Range.TopDepth
+			if thick > bestThick {
+				bestThick = thick
+				bestMean = d.Values.Mean
 			}
 		}
 	}
-}
 
-func GenerateSoilMoisture(fieldID, sensorID string) ([]byte, error) {
-	// Seed the random number generator to get different results each time
-	rand.Seed(time.Now().UnixNano())
+	// 4. Convert mapped units (e.g. 314 → 31.4%) to an int percent
+	moisturePct := int(math.Round(bestMean / 10))
 
-	// Initial moisture level (in percentage)
-	moistureLevel := rand.Intn(101) // Start with a random moisture level between 0 and 100
-
-	// Start a ticker to run every 15 minutes (15 * 60 seconds)
-	ticker := time.NewTicker(10 * time.Second)
-
-	// Run the loop indefinitely to output moisture values every 15 minutes
-	for {
-		// Wait for the next tick
-		<-ticker.C
-
-		// Generate a realistic moisture change within a range of -10 to +10
-		// Ensure moisture level stays between 0 and 100
-		change := rand.Intn(21) - 10 // This will give values between -10 and +10
-
-		// Apply the change and ensure the value stays within bounds (0 - 100)
-		moistureLevel += change
-		if moistureLevel > 100 {
-			moistureLevel = 100
-		} else if moistureLevel < 0 {
-			moistureLevel = 0
-		}
-		log.Printf("Moisture level '%d' generated", moistureLevel)
-
-		data := model.SensorData{
-			FieldID:   fieldID,
-			SensorID:  sensorID,
-			Moisture:  moistureLevel,
-			Timestamp: time.Now(),
-		}
-		return json.Marshal(data)
-	}
-
+	// 5. Build and return your SensorData
+	return messages.SensorData{
+		SensorID:   sensor.ID,
+		FieldId:    sensor.FieldId,
+		Moisture:   moisturePct,
+		Aggregated: false,
+		Timestamp:  time.Now().UTC(),
+	}, nil
 }

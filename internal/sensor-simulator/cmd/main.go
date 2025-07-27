@@ -1,37 +1,59 @@
-// cmd/sensor-sim/main.go
 package main
 
 import (
 	"context"
-	"flag"
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
-	"log"
-	"math"
-	"time"
-
-	sensorSimulator "github.com/LeonardoBeccarini/sdcc_project/internal/sensor-simulator"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/services/aggregator"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
+	"log"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 )
 
-func main() {
-	// define flags
-	sensorID := flag.String("sensor-id", "sensor1", "unique sensor identifier")
-	fieldID := flag.String("field-id", "field1", "unique field identifier")
-	clientID := flag.String("client-id", "sensorPublisher1", "MQTT client ID")
-	interval := flag.Duration("interval", 10*time.Second, "publish interval")
-	lat := flag.Float64("lat", 12.37007, "latitude")
-	lon := flag.Float64("lon", 41.51109, "longitude")
-	maxDepth := flag.Int("depth", 30, "max soil depth")
-	flowRate := flag.Float64("flow-rate", 10.0, "flow rate") //provvisorio
-	flag.Parse()
+func mustGetenv(key string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		log.Fatalf("Missing required environment variable: %s", key)
+	}
+	return val
+}
 
-	// inject flags into config
+func main() {
+	host := mustGetenv("RABBITMQ_HOST")
+	portStr := mustGetenv("RABBITMQ_PORT")
+	user := mustGetenv("RABBITMQ_USER")
+	pass := mustGetenv("RABBITMQ_PASSWORD")
+	clientID := mustGetenv("RABBITMQ_CLIENTID")
+
+	port, err := strconv.Atoi(strings.TrimSpace(portStr))
+	if err != nil {
+		log.Fatalf("Invalid RABBITMQ_PORT: %v", err)
+	}
+
+	// Use client ID to determine which topics to subscribe to
+	var topics []string
+	switch clientID {
+	case "aggregator-field1":
+		topics = []string{
+			"field_1/sensor_1/data",
+			"field_1/sensor_2/data",
+		}
+	case "aggregator-field2":
+		topics = []string{
+			"field_2/sensor_3/data",
+			"field_2/sensor_4/data",
+		}
+	default:
+		log.Fatalf("Unknown clientID: %s", clientID)
+	}
+
 	cfg := &rabbitmq.RabbitMQConfig{
-		Host:     "localhost",
-		Port:     1883,
-		User:     "guest",
-		Password: "guest",
-		ClientID: *clientID,
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: pass,
+		ClientID: clientID,
 		Exchange: "sensor_data",
 		Kind:     "topic",
 	}
@@ -41,25 +63,15 @@ func main() {
 
 	client, err := rabbitmq.NewRabbitMQConn(cfg, ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to connect to MQTT broker: %v", err)
 	}
 
-	publisher := rabbitmq.NewPublisher(client, "sensor/data", cfg.Exchange)
-	consumer := rabbitmq.NewConsumer(client, "event/stateChangeEvent", cfg.Exchange, nil)
-	halfLife := 2 * time.Hour
-	decayRate := math.Log(2) / halfLife.Seconds()
-	generator := sensorSimulator.NewDataGenerator(decayRate)
-	sensor := entities.Sensor{
-		FieldId:   *fieldID,
-		ID:        *sensorID,
-		Longitude: *lon,
-		Latitude:  *lat,
-		MaxDepth:  *maxDepth,
-		State:     entities.SensorState("off"),
-		FlowRate:  *flowRate,
-	}
-	simulatedSensor := sensorSimulator.NewSensorSimulator(consumer, publisher, generator, &sensor)
+	publisher := rabbitmq.NewPublisher(client, "sensor/aggregatedData", cfg.Exchange)
 
-	// pass sensorID through context or modify StartPublishing to accept it
-	simulatedSensor.Start(ctx, *interval)
+	consumer := rabbitmq.NewMultiConsumer(client, topics, cfg.Exchange, nil)
+
+	service := aggregator.NewDataAggregatorService(consumer, publisher, 1*time.Minute)
+
+	log.Printf("Data Aggregator [%s] is running...", clientID)
+	service.Start(ctx)
 }

@@ -3,23 +3,44 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model/messages"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/joho/godotenv"
+	"log"
+	"os"
+	"os/exec"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
 )
 
 func main() {
+	err := godotenv.Load("internal/config/rabbitmq.env")
+	if err != nil {
+		log.Fatalf("Error loading .env file: %v", err)
+	}
+	portStr := os.Getenv("RABBITMQ_PORT")
+	if portStr == "" {
+		// Try to fetch MQTT service NodePort
+		out, err := exec.Command("kubectl", "get", "svc", "rabbitmq-mqtt", "-n", "rabbitmq", "-o", "jsonpath={.spec.ports[0].nodePort}").Output()
+		if err != nil {
+			log.Fatalf("Could not detect NodePort: %v", err)
+		}
+		portStr = string(out)
+	}
+
+	port, err := strconv.Atoi(strings.TrimSpace(portStr))
+	if err != nil {
+		log.Fatalf("Invalid RABBITMQ_PORT: %v", err)
+	}
 	// RabbitMQ MQTT configuration
 	cfg := &rabbitmq.RabbitMQConfig{
-		Host:     "localhost",
-		Port:     1883,
-		User:     "guest",
-		Password: "guest",
+		Host:     os.Getenv("RABBITMQ_HOST"),
+		Port:     port,
+		User:     os.Getenv("RABBITMQ_USER"),
+		Password: os.Getenv("RABBITMQ_PASSWORD"),
 		ClientID: "dummyConsumer1",
 		Exchange: "sensor_data",
 	}
@@ -44,7 +65,7 @@ func main() {
 
 	// Handler function to process incoming aggregated data messages
 	handler := func(queue string, message mqtt.Message) error {
-		var aggregatedData model.SensorData
+		var aggregatedData messages.SensorData
 		err := json.Unmarshal(message.Payload(), &aggregatedData)
 		if err != nil {
 			log.Printf("Failed to unmarshal aggregated data: %v", err)

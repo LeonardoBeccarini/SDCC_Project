@@ -66,3 +66,56 @@ func (c *Consumer) ConsumeMessage(ctx context.Context) {
 	unsubToken := c.client.Unsubscribe(c.topic)
 	unsubToken.Wait()
 }
+
+// MultiConsumer -------------------------- [] ---------------------- [] ---------------------
+type MultiConsumer struct {
+	client   mqtt.Client
+	topics   []string
+	exchange string
+	handler  func(queue string, message mqtt.Message) error
+}
+
+func NewMultiConsumer(client mqtt.Client, topics []string, exchange string, handler func(queue string, message mqtt.Message) error) *MultiConsumer {
+	return &MultiConsumer{
+		client:   client,
+		topics:   topics,
+		exchange: exchange,
+		handler:  handler,
+	}
+}
+
+func (m *MultiConsumer) SetHandler(handler func(queue string, message mqtt.Message) error) {
+	m.handler = handler
+}
+
+func (m *MultiConsumer) ConsumeMessage(ctx context.Context) {
+	for _, topic := range m.topics {
+		topic := topic // shadow for closure safety
+		token := m.client.Subscribe(
+			topic,
+			0,
+			func(client mqtt.Client, msg mqtt.Message) {
+				if m.handler == nil {
+					fmt.Printf("No handler set for topic %s\n", topic)
+					return
+				}
+				if err := m.handler(topic, msg); err != nil {
+					fmt.Printf("Error handling message on %s: %v\n", topic, err)
+				}
+			},
+		)
+		token.Wait()
+		if token.Error() != nil {
+			fmt.Printf("Error subscribing to topic %s: %v\n", topic, token.Error())
+		} else {
+			fmt.Printf("Successfully subscribed to topic %s\n", topic)
+		}
+	}
+
+	<-ctx.Done()
+
+	// On context cancel: unsubscribe from all
+	for _, topic := range m.topics {
+		m.client.Unsubscribe(topic)
+	}
+}
