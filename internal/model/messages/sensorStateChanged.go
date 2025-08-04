@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const (
+	StateOn  = "ON"
+	StateOff = "OFF"
+)
+
 // StateChangeEvent is emitted when a sensor needs a new irrigation state.
 type StateChangeEvent struct {
 	FieldID   string               `json:"field_id"`

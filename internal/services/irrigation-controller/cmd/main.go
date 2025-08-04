@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	pb "github.com/LeonardoBeccarini/sdcc_project/deploy/gen/go/irrigation"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/model/messages"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/joho/godotenv"
+	"google.golang.org/grpc"
 	"log"
 	"os"
 	"os/exec"
@@ -14,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -75,6 +78,22 @@ func main() {
 		log.Printf("Received Aggregated Data: SensorID=%s, Moisture=%d, Timestamp=%s",
 			aggregatedData.SensorID, aggregatedData.Moisture,
 			aggregatedData.Timestamp.Format("2006-01-02 15:04:05"))
+
+		// Esempio di decisione: irrigare se Moisture < 30
+		if aggregatedData.Moisture < 30 {
+			ctxGrpc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			resp, err := grpcClient.StartIrrigation(ctxGrpc, &pb.StartRequest{
+				FieldId:     aggregatedData.FieldID,
+				DurationMin: 20,
+			})
+			if err != nil {
+				log.Printf("Error calling StartIrrigation: %v", err)
+			} else {
+				log.Printf("DeviceService response: %s", resp.Message)
+			}
+		}
 
 		return nil
 	}

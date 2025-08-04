@@ -12,7 +12,7 @@ const (
 
 // Sensor represents a single device in the field.
 type Sensor struct {
-	FieldId   string      `json:"field_id"`
+	FieldID   string      `json:"field_id"`
 	ID        string      `json:"id"` // unique sensor identifier
 	Longitude float64     `json:"longitude"`
 	Latitude  float64     `json:"latitude"`

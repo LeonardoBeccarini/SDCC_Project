@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: irrigationcontroller
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: irrigationcontroller
+  template:
+    metadata:
+      labels:
+        app: irrigationcontroller
+    spec:
+      containers:
+        - name: irrigationcontroller
+          image: irrigationcontroller:latest
+          imagePullPolicy: Never
+          env:
+            - name: RABBITMQ_HOST
+              value: "rabbitmq.rabbitmq.svc.cluster.local"
+            - name: RABBITMQ_PORT
+              value: "1883"
+            - name: RABBITMQ_USER
+              value: "myuser"          # 👈 aggiunto
+            - name: RABBITMQ_PASSWORD
+              value: "mypassword"      # 👈 aggiunto
+

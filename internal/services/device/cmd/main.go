@@ -2,16 +2,23 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+
 	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/services/device"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
-	"log"
-	"os/signal"
-	"syscall"
+
+	pb "github.com/LeonardoBeccarini/sdcc_project/deploy/gen/go/irrigation"
+	"google.golang.org/grpc"
 )
 
 func main() {
-	// Define your fields with their sensors
 	fields := map[string]entities.Field{
 		"field1": {
 			ID:       "field1",
@@ -33,37 +40,69 @@ func main() {
 		},
 	}
 
-	// RabbitMQ configuration for MQTT connection
-	cfg := &rabbitmq.RabbitMQConfig{
-		Host:     "localhost",
-		Port:     1883,
-		User:     "guest",
-		Password: "guest",
-		ClientID: "DeviceService1",
+	// Legge le variabili d'ambiente
+	host := os.Getenv("RABBITMQ_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	portStr := os.Getenv("RABBITMQ_PORT")
+	if portStr == "" {
+		portStr = "1883"
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		log.Fatalf("Invalid RABBITMQ_PORT: %v", err)
 	}
 
-	// Create context with cancellation on OS signals
+	user := os.Getenv("RABBITMQ_USER")
+	if user == "" {
+		user = "guest"
+	}
+	password := os.Getenv("RABBITMQ_PASSWORD")
+	if password == "" {
+		password = "guest"
+	}
+
+	clientID := fmt.Sprintf("DeviceService-%s", os.Getenv("HOSTNAME"))
+	cfg := &rabbitmq.RabbitMQConfig{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		ClientID: clientID,
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Create MQTT connection
 	client, err := rabbitmq.NewRabbitMQConn(cfg, ctx)
 	if err != nil {
 		log.Fatalf("Failed to connect to MQTT broker: %v", err)
 	}
 
-	// Create consumer to subscribe to sensor_data exchange for sensor readings
 	consumer := rabbitmq.NewConsumer(client, "sensor/data", "sensor_data", nil)
-
-	// Create publisher to publish device commands or state changes to device_commands exchange
 	publisher := rabbitmq.NewPublisher(client, "event/stateChangeEvent", "device_commands")
 
-	// Instantiate and start your DeviceService
+	// Avvio DeviceService logica MQTT
 	svc := device.NewDeviceService(consumer, publisher, fields)
+	go func() {
+		log.Println("Starting DeviceService MQTT loop...")
+		svc.Start(ctx)
+	}()
 
-	log.Println("Starting DeviceService...")
-	svc.Start(ctx) // blocks until ctx canceled
-	log.Println("DeviceService has shut down")
+	// Avvio server gRPC
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+
+	grpcServer := grpc.NewServer()
+	pb.RegisterDeviceServiceServer(grpcServer, device.NewGrpcHandler(publisher, fields))
+
+	log.Println("DeviceService gRPC server listening on :50051")
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve gRPC: %v", err)
+	}
 }

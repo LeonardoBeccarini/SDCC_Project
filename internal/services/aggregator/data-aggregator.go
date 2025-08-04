@@ -85,7 +85,7 @@ func (d *DataAggregatorService) aggregateAndPublish() {
 
 		out := messages.SensorData{
 			SensorID:   sensorID,
-			FieldId:    readings[0].FieldId,
+			FieldID:    readings[0].FieldID,
 			Moisture:   avg,
 			Aggregated: true,
 			Timestamp:  time.Now(),

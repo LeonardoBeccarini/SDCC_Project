@@ -24,7 +24,7 @@ func main() {
 	portStr := mustGetenv("RABBITMQ_PORT")
 	user := mustGetenv("RABBITMQ_USER")
 	pass := mustGetenv("RABBITMQ_PASSWORD")
-	clientID := mustGetenv("RABBITMQ_CLIENTID")
+	clientID := mustGetenv("CLIENT_ID")
 
 	port, err := strconv.Atoi(strings.TrimSpace(portStr))
 	if err != nil {

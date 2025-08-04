@@ -124,7 +124,7 @@ func fetchSensorData(
 	// 5. Build and return your SensorData
 	return messages.SensorData{
 		SensorID:   sensor.ID,
-		FieldId:    sensor.FieldId,
+		FieldID:    sensor.FieldID,
 		Moisture:   moisturePct,
 		Aggregated: false,
 		Timestamp:  time.Now().UTC(),

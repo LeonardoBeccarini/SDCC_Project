@@ -2,7 +2,7 @@
 docker build -f ./internal/sensor-simulator/Dockerfile -t sensor-simulator:latest .
 # Carica il file di configurazione condiviso
 kubectl apply -f ./deploy/sensors/configMap/sensors-config-configmap.yaml
-
+kubectl apply -f ./deploy/sensors/configMap/rabbitmq-env-configMap.yaml
 # Per ogni sensore
 kubectl apply -f ./deploy/sensors/configMap/sensor-1-env-configMap.yaml
 kubectl apply -f ./deploy/sensors/sensor-1.yaml

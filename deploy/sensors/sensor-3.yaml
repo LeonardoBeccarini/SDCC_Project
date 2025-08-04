@@ -23,7 +23,10 @@ spec:
             - containerPort: 8080
           envFrom:
             - configMapRef:
+                name: rabbitmq-env
+            - configMapRef:
                 name: sensor-sensor-3-env
+
           volumeMounts:
             - name: config-volume
               mountPath: /app/config/sensors-config.json
