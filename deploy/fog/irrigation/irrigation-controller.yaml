@@ -19,11 +19,11 @@ spec:
           imagePullPolicy: Never
           env:
             - name: RABBITMQ_HOST
-              value: "rabbitmq.rabbitmq.svc.cluster.local"
+              value: "192.168.49.2"
             - name: RABBITMQ_PORT
-              value: "1883"
+              value: "31883"
             - name: RABBITMQ_USER
-              value: "myuser"          # 👈 aggiunto
+              value: "mqtt_user"          # 👈 aggiunto
             - name: RABBITMQ_PASSWORD
-              value: "mypassword"      # 👈 aggiunto
+              value: "mqtt_pwd"       # 👈 aggiunto
 

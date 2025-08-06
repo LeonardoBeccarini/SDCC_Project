@@ -65,6 +65,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect MQTT broker: %v", err)
 	}
+	conn, err := grpc.Dial("deviceservice:50051", grpc.WithInsecure())
+	if err != nil {
+		log.Fatalf("Failed to connect to DeviceService gRPC: %v", err)
+	}
+	defer conn.Close()
+
+	grpcClient := pb.NewDeviceServiceClient(conn)
 
 	// Handler function to process incoming aggregated data messages
 	handler := func(queue string, message mqtt.Message) error {
@@ -97,12 +104,13 @@ func main() {
 
 		return nil
 	}
-
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
 	// Create consumer subscribing to "sensor/aggregatedData" topic
 	consumer := rabbitmq.NewConsumer(client, "sensor/aggregatedData", cfg.Exchange, handler)
 
 	// Start consuming
-	consumer.ConsumeMessage(nil)
+	consumer.ConsumeMessage(ctx)
 
 	// Block until context cancellation
 	<-ctx.Done()

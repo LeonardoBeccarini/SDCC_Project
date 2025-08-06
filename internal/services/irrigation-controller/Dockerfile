@@ -1,17 +1,29 @@
 FROM golang:1.23-alpine AS builder
 
+ENV GOOS=linux
+ENV GOARCH=amd64
+ENV CGO_ENABLED=0
+
 WORKDIR /app
 
-COPY go.mod go.sum ./
-RUN go mod download
-
+# Copia tutto il progetto
 COPY . .
 
-# Compila esplicitamente per Linux amd64
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o irrigation-controller ./internal/services/irrigation-controller
+# Copia anche il file .env (se vuoi davvero usarlo nel container)
+COPY internal/config/rabbitmq.env /app/internal/config/rabbitmq.env
 
-FROM alpine:3.19
-WORKDIR /root/
-COPY --from=builder /app/irrigation-controller /root/irrigation-controller
-RUN chmod +x /root/irrigation-controller
-ENTRYPOINT ["/root/irrigation-controller"]
+# Risolve le dipendenze
+RUN go mod tidy
+
+# Compila il main dell’irrigation-controller
+RUN go build -o irrigation-controller ./internal/services/irrigation-controller/cmd/main.go
+
+FROM alpine:3.18
+WORKDIR /root
+
+COPY --from=builder /app/irrigation-controller .
+# Copia il file .env anche nell'immagine finale (se serve)
+COPY --from=builder /app/internal/config/rabbitmq.env ./internal/config/rabbitmq.env
+
+CMD ["./irrigation-controller"]
+
