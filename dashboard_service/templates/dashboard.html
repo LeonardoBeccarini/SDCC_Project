@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dashboard Agricoltura</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+    <h1>Dashboard Monitoraggio Terreno</h1>
+</header>
+
+<main class="grid">
+    <section class="card" id="levels">
+        <h2>Livelli Umidità Terreno</h2>
+        <ul>
+            {% for sensor in sensors %}
+            <li><strong>{{ sensor.id }}</strong>: {{ sensor.value }}% ({{ sensor.status }})</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section class="card" id="analytics">
+        <h2>Analytics</h2>
+        <p>Media giornaliera: {{ stats.mean }}%</p>
+        <p>Massimo: {{ stats.max }}%</p>
+        <p>Minimo: {{ stats.min }}%</p>
+        <!-- (In futuro: qui va un grafico JS tipo Chart.js) -->
+    </section>
+
+    <section class="card fullwidth" id="log">
+        <h2>Log Eventi</h2>
+        <ul>
+            {% for ev in events %}
+            <li>{{ ev.time }} — {{ ev.description }}</li>
+            {% endfor %}
+        </ul>
+    </section>
+</main>
+</body>
+</html>
+
