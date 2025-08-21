@@ -1,8 +1,8 @@
-
+import requests
 from flask import Flask, render_template
 
 app = Flask(__name__)
-
+GATEWAY_URL = "http://172.31.39.52:5009"
 @app.route("/")
 def dashboard():
     # Dati di esempio (verranno da Go più avanti)
@@ -20,6 +20,16 @@ def dashboard():
     stats = {
         "mean": 29.85  # esempio di media
     }
+    data = {}
+    try:
+        data = requests.get(f"{GATEWAY_URL}/dashboard/data", timeout=3).json()
+    except Exception as e:
+        print("Errore gateway:", e)
+        data = {"sensors": [], "irrigations": [], "stats": {}}
+    return render_template("dashboard.html",
+                           sensors=data.get("sensors", []),
+                           irrigations=data.get("irrigations", []),
+                           stats=data.get("stats", {}))
 
     return render_template("dashboard.html", sensors=sensors, irrigations=irrigations, stats=stats)
 

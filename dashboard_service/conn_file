@@ -1,0 +1,1 @@
+ssh -i dashboard-key.pem ubuntu@<IP>
