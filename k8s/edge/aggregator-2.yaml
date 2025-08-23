@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aggregator-2
+  namespace: edge
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: aggregator-2 } }
+  template:
+    metadata:
+      labels: { app: aggregator-2 }
+    spec:
+      nodeSelector: { role: edge2 }
+      containers:
+        - name: aggregator
+          image: sdcc/aggregator:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: mqtt-common }
+            - secretRef: { name: mqtt-credentials }
+          env:
+            - { name: SENSOR_TOPICS, value: "sensor/data/field_2/+" }
+            - { name: MQTT_CLIENT_ID, value: "aggregator-2" }
+            - { name: AGGREGATION_WINDOW, value: "15m" }

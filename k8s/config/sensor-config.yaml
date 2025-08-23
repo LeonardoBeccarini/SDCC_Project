@@ -1,0 +1,54 @@
+# Stessa configurazione condivisa in TUTTI i namespace che la usano
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sensors-config
+  namespace: sensors
+data:
+  sensors-config.json: |
+    {
+      "field_1": [
+        { "field_id":"field_1", "id": "sensor_1", "latitude": 12.37007,  "longitude": 41.51109,  "max_depth": 30, "flow_rate": 10 },
+        { "field_id":"field_1", "id": "sensor_2", "latitude": 12.616869, "longitude": 41.853104, "max_depth": 30, "flow_rate": 10 }
+      ],
+      "field_2": [
+        { "field_id":"field_2", "id": "sensor_3", "latitude": 12.614386, "longitude": 41.853818, "max_depth": 30, "flow_rate": 10 },
+        { "field_id":"field_2", "id": "sensor_4", "latitude": 12.614975, "longitude": 41.852748, "max_depth": 30, "flow_rate": 10 }
+      ]
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sensors-config
+  namespace: fog
+data:
+  sensors-config.json: |
+    {
+      "field_1": [
+        { "field_id":"field_1", "id": "sensor_1", "latitude": 12.37007,  "longitude": 41.51109,  "max_depth": 30, "flow_rate": 10 },
+        { "field_id":"field_1", "id": "sensor_2", "latitude": 12.616869, "longitude": 41.853104, "max_depth": 30, "flow_rate": 10 }
+      ],
+      "field_2": [
+        { "field_id":"field_2", "id": "sensor_3", "latitude": 12.614386, "longitude": 41.853818, "max_depth": 30, "flow_rate": 10 },
+        { "field_id":"field_2", "id": "sensor_4", "latitude": 12.614975, "longitude": 41.852748, "max_depth": 30, "flow_rate": 10 }
+      ]
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sensors-config
+  namespace: edge
+data:
+  sensors-config.json: |
+    {
+      "field_1": [
+        { "field_id":"field_1", "id": "sensor_1", "latitude": 12.37007,  "longitude": 41.51109,  "max_depth": 30, "flow_rate": 10 },
+        { "field_id":"field_1", "id": "sensor_2", "latitude": 12.616869, "longitude": 41.853104, "max_depth": 30, "flow_rate": 10 }
+      ],
+      "field_2": [
+        { "field_id":"field_2", "id": "sensor_3", "latitude": 12.614386, "longitude": 41.853818, "max_depth": 30, "flow_rate": 10 },
+        { "field_id":"field_2", "id": "sensor_4", "latitude": 12.614975, "longitude": 41.852748, "max_depth": 30, "flow_rate": 10 }
+      ]
+    }

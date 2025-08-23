@@ -1,37 +1,27 @@
-# Use official Golang image to build the Go application
+# ==== builder ====
 FROM golang:1.23-alpine AS builder
-
-# Install git and certificates (needed for go mod tidy)
 RUN apk add --no-cache git ca-certificates
+WORKDIR /src
 
-# Set the Current Working Directory inside the container
-WORKDIR /app
-
-# Copy the Go Modules manifests
+# Mod cache
 COPY go.mod go.sum ./
-
-# Download dependencies
 RUN go mod download
 
-# Copy all source code needed
-COPY ./internal/sensor-simulator /app/internal/sensor-simulator
-COPY ./internal/model /app/internal/model
-COPY ./internal/config /app/internal/config
-COPY ./internal/services/aggregator /app/internal/services/aggregator
-COPY ./deploy /app/deploy
-COPY ./pkg/rabbitmq /app/pkg/rabbitmq
+# Sorgenti necessari per il sensor-simulator
+COPY internal /src/internal
+COPY pkg /src/pkg
 
-# Run go mod tidy (now aggregator exists)
-RUN go mod tidy
+# Build (package directory: ./internal/sensor-simulator/cmd)
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -o /out/sensor-simulator ./internal/sensor-simulator/cmd
 
-# Build the Go app
-RUN go build -o /app/sensor-simulator /app/internal/sensor-simulator/cmd/main.go
+# ==== runtime ====
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=builder /out/sensor-simulator /app/sensor-simulator
+ENTRYPOINT ["/app/sensor-simulator"]
 
-# Expose port (optional)
-EXPOSE 8080
-
-# Run the Go app
-CMD ["/app/sensor-simulator"]
 
 
 

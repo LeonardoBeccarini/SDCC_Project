@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package irrigation;
+option go_package = "github.com/LeonardoBeccarini/sdcc_project/grpc/gen/go/irrigation;irrigation";
+
+
+service DeviceService {
+  rpc StartIrrigation(StartRequest) returns (CommandResponse);
+  rpc StopIrrigation(StopRequest) returns (CommandResponse);
+}
+
+
+message StartRequest {
+  string field_id = 1;
+  string sensor_id = 2; // NEW
+  double amount_mm = 3; // NEW: depth mm to apply (optional)
+  int32 duration_min = 4; // optional; controller currently computes this
+}
+
+
+message StopRequest {
+  string field_id = 1;
+  string sensor_id = 2; // NEW
+}
+
+message CommandResponse {
+  bool success = 1;
+  string message = 2;
+}
+

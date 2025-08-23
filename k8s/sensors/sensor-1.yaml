@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sensor-1
+  namespace: sensors
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: sensor-1 } }
+  template:
+    metadata:
+      labels: { app: sensor-1 }
+    spec:
+      nodeSelector: { role: sensors }
+      containers:
+        - name: sensor-simulator
+          image: sdcc/sensor-simulator:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: mqtt-common }
+            - secretRef: { name: mqtt-credentials }
+          env:
+            - { name: SENSOR_ID, value: "sensor_1" }
+            - { name: MQTT_CLIENT_ID, value: "sensor-simulator-sensor_1" }
+            - { name: PUBLISH_INTERVAL, value: "5s" }
+            - { name: STATE_CHANGE_TOPIC_TMPL, value: "event/StateChange/{field}/{sensor}" }
+            - { name: SENSORS_CONFIG_PATH, value: "/app/config/sensors-config.json" }
+          volumeMounts:
+            - { name: sensors-config, mountPath: /app/config/sensors-config.json, subPath: sensors-config.json }
+      volumes:
+        - name: sensors-config
+          configMap: { name: sensors-config }

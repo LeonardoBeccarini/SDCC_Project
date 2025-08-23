@@ -1,27 +1,23 @@
-# Use official Golang image to build the Go application
+# ==== builder ====
 FROM golang:1.23-alpine AS builder
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
 
-# Set the Current Working Directory inside the container
-WORKDIR /app
-
-# Copy the Go Modules manifests
+# Mod cache (contesto = root repo!)
 COPY go.mod go.sum ./
+RUN go mod download
 
-# Copia i file sorgente
-COPY ./internal/services/aggregator /app/internal/services/aggregator
-COPY ./internal/model /app/internal/model
-COPY ./internal/config /app/internal/config
-COPY ./deploy /app/deploy
-COPY ./pkg/rabbitmq /app/pkg/rabbitmq
+# Sorgenti usati dall'aggregator
+COPY internal /src/internal
+COPY pkg /src/pkg
 
-# Esegui go mod tidy per gestire le dipendenze
-RUN go mod tidy
+# Build
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -o /out/data-aggregator ./internal/services/aggregator/cmd
 
-# Esegui la build
-RUN go build -o /app/aggregator /app/internal/services/aggregator/cmd/main.go
-
-# Expose port (optional, depending on your configuration)
-#EXPOSE 8080
-
-# Run the Go app
-CMD ["/app/aggregator"]
+# ==== runtime ====
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=builder /out/data-aggregator /app/data-aggregator
+ENTRYPOINT ["/app/data-aggregator"]

@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mqtt-common
+  namespace: edge
+data:
+  RABBITMQ_HOST: "rabbitmq.rabbitmq.svc.cluster.local"
+  RABBITMQ_PORT: "1883"
+  RABBITMQ_EXCHANGE: "sensor_data"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mqtt-common
+  namespace: fog
+data:
+  RABBITMQ_HOST: "rabbitmq.rabbitmq.svc.cluster.local"
+  RABBITMQ_PORT: "1883"
+  RABBITMQ_EXCHANGE: "sensor_data"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mqtt-common
+  namespace: sensors
+data:
+  RABBITMQ_HOST: "rabbitmq.rabbitmq.svc.cluster.local"
+  RABBITMQ_PORT: "1883"
+  RABBITMQ_EXCHANGE: "sensor_data"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mqtt-credentials
+  namespace: edge
+type: Opaque
+stringData:
+  RABBITMQ_USER: "mqtt_user"
+  RABBITMQ_PASSWORD: "mqtt_pwd"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mqtt-credentials
+  namespace: fog
+type: Opaque
+stringData:
+  RABBITMQ_USER: "mqtt_user"
+  RABBITMQ_PASSWORD: "mqtt_pwd"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mqtt-credentials
+  namespace: sensors
+type: Opaque
+stringData:
+  RABBITMQ_USER: "mqtt_user"
+  RABBITMQ_PASSWORD: "mqtt_pwd"

@@ -5,8 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model/messages"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
 	"log"
 	"sync"
 	"time"
@@ -17,8 +16,8 @@ import (
 
 type SensorSimulator struct {
 	mu        sync.Mutex
-	sensor    *entities.Sensor // only one sensor here
-	timer     *time.Timer      // single timer
+	sensor    *model.Sensor // only one sensor here
+	timer     *time.Timer   // single timer
 	generator *DataGenerator
 	publisher rabbitmq.IPublisher
 	consumer  rabbitmq.IConsumer[mqtt.Message]
@@ -29,7 +28,7 @@ func NewSensorSimulator(
 	consumer rabbitmq.IConsumer[mqtt.Message],
 	publisher rabbitmq.IPublisher,
 	gen *DataGenerator,
-	sensor *entities.Sensor,
+	sensor *model.Sensor,
 ) *SensorSimulator {
 	return &SensorSimulator{
 		sensor:    sensor,
@@ -72,7 +71,7 @@ func (s *SensorSimulator) Start(
 
 // handleMessage expects StateChangeEvent for *this* sensor
 func (s *SensorSimulator) handleMessage(queue string, msg mqtt.Message) error {
-	var evt messages.StateChangeEvent
+	var evt model.StateChangeEvent
 	if err := json.Unmarshal(msg.Payload(), &evt); err != nil {
 		return fmt.Errorf("invalid StateChangeEvent: %w", err)
 	}
@@ -84,7 +83,7 @@ func (s *SensorSimulator) handleMessage(queue string, msg mqtt.Message) error {
 	return nil
 }
 
-func (s *SensorSimulator) applyTimedState(evt messages.StateChangeEvent) {
+func (s *SensorSimulator) applyTimedState(evt model.StateChangeEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -99,6 +98,11 @@ func (s *SensorSimulator) applyTimedState(evt messages.StateChangeEvent) {
 	// apply new state
 	s.sensor.State = evt.NewState
 	fmt.Printf("Sensor %s → %s for %s\n", s.sensor.ID, evt.NewState, evt.Duration)
+
+	// Se l'irrigazione va in ON, riflette subito l'acqua applicata nella moisture
+	if evt.NewState == model.StateOn && s.generator != nil {
+		s.generator.ApplyIrrigation(evt.Duration)
+	}
 
 	// schedule a revert
 	s.timer = time.AfterFunc(evt.Duration, func() {

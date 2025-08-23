@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
 	sensor_simulator "github.com/LeonardoBeccarini/sdcc_project/internal/sensor-simulator"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
@@ -23,14 +24,23 @@ func mustGetenv(key string) string {
 }
 
 func main() {
-	// Lettura variabili di ambiente
 	host := mustGetenv("RABBITMQ_HOST")
 	portStr := mustGetenv("RABBITMQ_PORT")
 	user := mustGetenv("RABBITMQ_USER")
 	pass := mustGetenv("RABBITMQ_PASSWORD")
-	clientID := mustGetenv("CLIENT_ID")
-	configPath := mustGetenv("CONFIG_PATH")
-	intervalStr := mustGetenv("PUBLISH_INTERVAL")
+	exchange := os.Getenv("RABBITMQ_EXCHANGE")
+	clientID := os.Getenv("MQTT_CLIENT_ID")
+	if strings.TrimSpace(clientID) == "" {
+		clientID = "sensor-simulator-" + strconv.FormatInt(time.Now().Unix(), 10)
+	}
+	intervalStr := os.Getenv("PUBLISH_INTERVAL")
+	if intervalStr == "" {
+		intervalStr = "15m"
+	}
+	configPath := os.Getenv("SENSORS_CONFIG_PATH")
+	if configPath == "" {
+		configPath = "/app/config/sensors-config.json"
+	}
 	sensorID := mustGetenv("SENSOR_ID")
 
 	port, err := strconv.Atoi(strings.TrimSpace(portStr))
@@ -43,18 +53,18 @@ func main() {
 		log.Fatalf("Invalid PUBLISH_INTERVAL: %v", err)
 	}
 
-	// Lettura configurazione sensori dal ConfigMap
+	// Carica configurazione sensori
 	configBytes, err := ioutil.ReadFile(configPath)
 	if err != nil {
 		log.Fatalf("Failed to read config file %s: %v", configPath, err)
 	}
 
-	var config map[string][]entities.Sensor
+	var config map[string][]model.Sensor
 	if err := json.Unmarshal(configBytes, &config); err != nil {
 		log.Fatalf("Failed to unmarshal sensors config: %v", err)
 	}
 
-	// Cerca il sensore corrispondente a SENSOR_ID
+	// Trova il sensore richiesto
 	var sensor *entities.Sensor
 	for _, sensors := range config {
 		for _, s := range sensors {
@@ -65,18 +75,16 @@ func main() {
 		}
 	}
 	if sensor == nil {
-		log.Fatalf("Sensor with ID %s not found in config file", sensorID)
+		log.Fatalf("Sensor with id=%s not found in config", sensorID)
 	}
 
-	// Configurazione RabbitMQ
 	cfg := &rabbitmq.RabbitMQConfig{
 		Host:     host,
 		Port:     port,
 		User:     user,
 		Password: pass,
+		Exchange: exchange,
 		ClientID: clientID,
-		Exchange: "sensor_data",
-		Kind:     "topic",
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -87,14 +95,23 @@ func main() {
 		log.Fatalf("Failed to connect to MQTT broker: %v", err)
 	}
 
-	publisher := rabbitmq.NewPublisher(client, "field/"+sensor.FieldID+"/"+sensor.ID+"/data", cfg.Exchange)
-	consumer := rabbitmq.NewConsumer(client, "event/stateChangeEvent", cfg.Exchange, nil)
+	// Telemetria raw: sensor/data/{field}/{sensor}
+	pubTopic := "sensor/data/" + sensor.FieldID + "/" + sensor.ID
+	publisher := rabbitmq.NewPublisher(client, pubTopic, cfg.Exchange)
 
-	// Crea il generatore dati con un tasso di decadimento (es. 0.001 al secondo)
+	// Eventi di stato destinati al sensore
+	topicTmpl := os.Getenv("STATE_CHANGE_TOPIC_TMPL")
+	if strings.TrimSpace(topicTmpl) == "" {
+		topicTmpl = "event/StateChange/{field}/{sensor}"
+	}
+	replacer := strings.NewReplacer("{field}", sensor.FieldID, "{sensor}", sensor.ID)
+	stateTopic := replacer.Replace(topicTmpl)
+	consumer := rabbitmq.NewConsumer(client, stateTopic, cfg.Exchange, nil)
+
+	// Generatore: SOLO soilMoisture
 	gen := sensor_simulator.NewDataGenerator(0.001)
 
-	// Avvia il simulatore
 	service := sensor_simulator.NewSensorSimulator(consumer, publisher, gen, sensor)
-	log.Printf("Sensor Simulator [%s] started for field %s", sensor.ID, sensor.FieldID)
+	log.Printf("Sensor Simulator [%s] started for field %s, pub=%s, sub=%s", sensor.ID, sensor.FieldID, pubTopic, stateTopic)
 	service.Start(ctx, interval)
 }

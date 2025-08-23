@@ -3,106 +3,115 @@ package aggregator
 import (
 	"context"
 	"encoding/json"
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model/messages"
-	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
 	"log"
 	"sync"
 	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 )
 
 type DataAggregatorService struct {
-	consumer            rabbitmq.IConsumer[messages.SensorData]
-	publisher           rabbitmq.IPublisher
-	buffer              map[string][]messages.SensorData // key is SensorID now
-	mutex               sync.Mutex
-	aggregationInterval time.Duration
+	consumer  rabbitmq.IConsumer[model.SensorData]
+	publisher rabbitmq.IPublisher
+	window    time.Duration
+
+	mu     sync.Mutex
+	buffer map[string][]model.SensorData // key = fieldID|sensorID
 }
 
-func NewDataAggregatorService(consumer rabbitmq.IConsumer[messages.SensorData], publisher rabbitmq.IPublisher, aggregationInterval time.Duration) *DataAggregatorService {
+func NewDataAggregatorService(consumer rabbitmq.IConsumer[model.SensorData], publisher rabbitmq.IPublisher, window time.Duration) *DataAggregatorService {
+	if window <= 0 {
+		window = 15 * time.Minute
+	}
 	return &DataAggregatorService{
-		consumer:            consumer,
-		publisher:           publisher,
-		aggregationInterval: aggregationInterval,
-		buffer:              make(map[string][]messages.SensorData),
+		consumer:  consumer,
+		publisher: publisher,
+		window:    window,
+		buffer:    make(map[string][]model.SensorData),
 	}
-}
-
-func (d *DataAggregatorService) messageHandler(_ string, message mqtt.Message) error {
-	var sensorData messages.SensorData
-	if err := json.Unmarshal(message.Payload(), &sensorData); err != nil {
-		log.Printf("Error unmarshalling sensor data: %v", err)
-		return err
-	}
-
-	d.mutex.Lock()
-	d.buffer[sensorData.SensorID] = append(d.buffer[sensorData.SensorID], sensorData)
-	d.mutex.Unlock()
-
-	log.Printf("Buffered sensor data: %+v", sensorData)
-	return nil
 }
 
 func (d *DataAggregatorService) Start(ctx context.Context) {
-	// Inject the handler
-	d.consumer.SetHandler(d.messageHandler)
+	d.consumer.SetHandler(func(_ string, msg mqtt.Message) error {
+		var s model.SensorData
+		if err := json.Unmarshal(msg.Payload(), &s); err != nil {
+			log.Printf("aggregate: bad payload: %v", err)
+			return nil
+		}
+		if s.Aggregated {
+			return nil
+		}
+		key := s.FieldID + "|" + s.SensorID
+		d.mu.Lock()
+		d.buffer[key] = append(d.buffer[key], s)
+		d.mu.Unlock()
+		return nil
+	})
 
-	// Run consumer in background, prima non era in una goroutine--> era bloccante e quindi il ticker non veniva mai raggiunto!!
-	go d.consumer.ConsumeMessage(ctx)
-
-	// Start aggregation ticker
-	ticker := time.NewTicker(d.aggregationInterval)
+	ticker := time.NewTicker(d.window)
 	defer ticker.Stop()
+
+	go d.consumer.ConsumeMessage(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
-			d.publisher.Close()
 			return
 		case <-ticker.C:
-			log.Println("Running aggregation cycle")
-			d.aggregateAndPublish()
+			d.flush()
 		}
 	}
 }
 
-func (d *DataAggregatorService) aggregateAndPublish() {
-	d.mutex.Lock()
-	defer d.mutex.Unlock()
+func (d *DataAggregatorService) flush() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	log.Println("Running aggregation cycle")
-
-	for sensorID, readings := range d.buffer {
+	for key, readings := range d.buffer {
 		if len(readings) == 0 {
 			continue
 		}
+
 		sum := 0
 		for _, r := range readings {
 			sum += r.Moisture
 		}
-		avg := sum / len(readings)
+		avg := int(float64(sum)/float64(len(readings)) + 0.5)
 
-		out := messages.SensorData{
+		// split key
+		i := -1
+		for j := 0; j < len(key); j++ {
+			if key[j] == '|' {
+				i = j
+				break
+			}
+		}
+		fieldID, sensorID := "", ""
+		if i >= 0 {
+			fieldID, sensorID = key[:i], key[i+1:]
+		} else {
+			fieldID, sensorID = readings[0].FieldID, readings[0].SensorID
+		}
+
+		out := model.SensorData{
+			FieldID:    fieldID,
 			SensorID:   sensorID,
-			FieldID:    readings[0].FieldID,
 			Moisture:   avg,
 			Aggregated: true,
-			Timestamp:  time.Now(),
+			Timestamp:  time.Now().UTC(),
 		}
+		b, _ := json.Marshal(out)
 
-		b, err := json.Marshal(out)
-		if err != nil {
-			log.Printf("marshal err %v", err)
-			continue
-		}
-		if err := d.publisher.PublishMessage(string(b)); err != nil {
-			log.Printf("publish err %v", err)
+		topic := "sensor/aggregated/" + fieldID + "/" + sensorID
+		if err := d.publisher.PublishTo(topic, string(b)); err != nil {
+			log.Printf("aggregate: publish err %v", err)
 		} else {
-			log.Printf("Published for %s: %+v", sensorID, out)
+			log.Printf("aggregate: published %s %s -> %d%%", fieldID, sensorID, avg)
 		}
-
-		// reset buffer
-		d.buffer[sensorID] = readings[:0]
+		// clear
+		d.buffer[key] = readings[:0]
 	}
 }

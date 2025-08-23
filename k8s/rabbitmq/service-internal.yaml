@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: rabbitmq
+  labels: { app: rabbitmq }
+spec:
+  type: ClusterIP
+  selector: { app: rabbitmq }
+  ports:
+    - { name: mqtt, port: 1883, targetPort: 1883 }
+    - { name: amqp, port: 5672, targetPort: 5672 }
+    - { name: mgmt, port: 15672, targetPort: 15672 }

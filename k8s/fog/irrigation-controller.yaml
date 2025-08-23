@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: irrigation-controller
+  namespace: fog
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: irrigation-controller } }
+  template:
+    metadata:
+      labels: { app: irrigation-controller }
+    spec:
+      nodeSelector: { role: fog }
+      containers:
+        - name: irrigation-controller
+          image: sdcc/irrigation-controller:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: mqtt-common }
+            - secretRef: { name: mqtt-credentials }
+          env:
+            - { name: HOSTNAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+            - { name: AGGREGATED_SUB_TOPIC, value: "sensor/aggregated/#" }
+            - { name: IRRIGATION_DECISION_TOPIC_TMPL, value: "event/irrigationDecision/{field}/{sensor}" }
+            - { name: DEVICE_GRPC_ADDR_MAP, value: "field_1=device-svc-field1.edge.svc.cluster.local:50051,field_2=device-svc-field2.edge.svc.cluster.local:50051" }
+            - { name: SENSORS_CONFIG_PATH, value: "/app/config/sensors-config.json" }
+            - { name: MOISTURE_THRESHOLD_PCT, value: "25" }
+            - name: OWM_API_KEY
+              valueFrom:
+                secretKeyRef: { name: weather-owm, key: OWM_API_KEY }
+          volumeMounts:
+            - { name: sensors-config, mountPath: /app/config/sensors-config.json, subPath: sensors-config.json }
+      volumes:
+        - name: sensors-config
+          configMap: { name: sensors-config }

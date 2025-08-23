@@ -1,19 +1,28 @@
-# Stage 1: build
+# ==== builder ====
 FROM golang:1.23-alpine AS builder
+RUN apk add --no-cache git ca-certificates
+WORKDIR /src
 
-WORKDIR /app
-
+# Mod cache
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+# Sorgenti
+COPY internal /src/internal
+COPY pkg      /src/pkg
+COPY grpc     /src/grpc
 
-# Build DeviceService
-RUN CGO_ENABLED=0 GOOS=linux go build -o device-service ./internal/services/device/cmd
+# Build
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /out/device-service ./internal/services/device/cmd
 
-# Stage 2: runtime minimale
-FROM alpine:3.19
-WORKDIR /root/
-COPY --from=builder /app/device-service .
+# ==== runtime ====
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=builder /out/device-service /app/device-service
 EXPOSE 50051
-ENTRYPOINT ["./device-service"]
+ENTRYPOINT ["/app/device-service"]
+
+
+

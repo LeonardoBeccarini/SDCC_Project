@@ -3,12 +3,12 @@ package sensor_simulator
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model/messages"
-	"io/ioutil"
+	"io"
 	"math"
 	"net/http"
 	"time"
+
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
 )
 
 // DataGenerator just knows how to fetch & decay soil-moisture.
@@ -25,11 +25,11 @@ func NewDataGenerator(decayRate float64) *DataGenerator {
 
 // Next pulls new raw data, applies decay since last timestamp,
 // and returns a complete model.SensorData.
-func (g *DataGenerator) Next(sensor *entities.Sensor) (messages.SensorData, error) {
+func (g *DataGenerator) Next(sensor *model.Sensor) (model.SensorData, error) {
 	// 1) Hit the SoilGrids API
 	sd, err := fetchSensorData(*sensor)
 	if err != nil {
-		return messages.SensorData{}, err
+		return model.SensorData{}, err
 	}
 
 	now := time.Now().UTC()
@@ -66,12 +66,9 @@ type SoilGridResponse struct {
 }
 
 // fetchSensorData pulls the SoilGrids wv0010 property, picks the
-// thickest layer up to maxDepth, converts to an integer percent,
-// and wraps it in your model.SensorData.
-func fetchSensorData(
-	sensor entities.Sensor,
-) (messages.SensorData, error) {
-
+// thickest layer up to maxDepth (fallback: first layer), converts to an
+// integer percent, and wraps it in your model.SensorData.
+func fetchSensorData(sensor model.Sensor) (model.SensorData, error) {
 	// 1. Hit the API asking only for wv0010
 	url := fmt.Sprintf(
 		"https://rest.isric.org/soilgrids/v2.0/properties/query?lat=%f&lon=%f&property=wv0010",
@@ -79,32 +76,35 @@ func fetchSensorData(
 	)
 	resp, err := http.Get(url)
 	if err != nil {
-		return messages.SensorData{}, fmt.Errorf("HTTP error: %w", err)
+		return model.SensorData{}, fmt.Errorf("HTTP error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return messages.SensorData{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+		body, _ := io.ReadAll(resp.Body)
+		return model.SensorData{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	// 2. Decode into our struct
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return messages.SensorData{}, fmt.Errorf("read body: %w", err)
+		return model.SensorData{}, fmt.Errorf("read body: %w", err)
 	}
 
 	var sg SoilGridResponse
 	if err := json.Unmarshal(body, &sg); err != nil {
-		return messages.SensorData{}, fmt.Errorf("unmarshal: %w\nJSON: %s", err, string(body))
+		return model.SensorData{}, fmt.Errorf("unmarshal: %w\nJSON: %s", err, string(body))
 	}
 
-	// 3. Find the thickest layer ≤ maxDepth
+	// 3. Find the thickest layer ≤ maxDepth (fallback: first)
 	layers := sg.Properties.Layers
 	if len(layers) == 0 {
-		return messages.SensorData{}, fmt.Errorf("no layers in response")
+		return model.SensorData{}, fmt.Errorf("no layers in response")
 	}
 	depths := layers[0].Depths
+	if len(depths) == 0 {
+		return model.SensorData{}, fmt.Errorf("no depths in first layer")
+	}
 
 	var bestMean float64
 	var bestThick int
@@ -117,16 +117,40 @@ func fetchSensorData(
 			}
 		}
 	}
+	// Fallback: if nothing ≤ MaxDepth, take the first depth entry
+	if bestThick == 0 {
+		bestMean = depths[0].Values.Mean
+	}
 
 	// 4. Convert mapped units (e.g. 314 → 31.4%) to an int percent
 	moisturePct := int(math.Round(bestMean / 10))
 
 	// 5. Build and return your SensorData
-	return messages.SensorData{
+	return model.SensorData{
 		SensorID:   sensor.ID,
 		FieldID:    sensor.FieldID,
 		Moisture:   moisturePct,
 		Aggregated: false,
 		Timestamp:  time.Now().UTC(),
 	}, nil
+}
+
+/*
+ApplyIrrigation bumps the internal moisture state proportionally to the
+irrigation duration. Simple linear model: +0.3 percentage point per minute.
+e.g., 10 minutes -> +3.0%. Values are clamped to [0, 1].
+*/
+func (g *DataGenerator) ApplyIrrigation(d time.Duration) {
+	if g == nil || d <= 0 {
+		return
+	}
+	// 0.003 in [0..1] units per minute = 0.3%/min
+	inc := 0.003 * d.Minutes()
+	g.lastMoisture += inc
+	if g.lastMoisture > 1.0 {
+		g.lastMoisture = 1.0
+	}
+	if g.lastMoisture < 0.0 {
+		g.lastMoisture = 0.0
+	}
 }

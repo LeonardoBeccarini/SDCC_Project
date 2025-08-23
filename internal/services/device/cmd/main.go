@@ -2,107 +2,114 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
+	pb "github.com/LeonardoBeccarini/sdcc_project/grpc/gen/go/irrigation"
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/services/device"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
-
-	pb "github.com/LeonardoBeccarini/sdcc_project/deploy/gen/go/irrigation"
 	"google.golang.org/grpc"
 )
 
+func mustEnv(k, def string) string {
+	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+		return v
+	}
+	if def != "" {
+		return def
+	}
+	log.Fatalf("missing required env %s", k)
+	return ""
+}
+
 func main() {
-	fields := map[string]entities.Field{
-		"field1": {
-			ID:       "field1",
-			CropType: "corn",
-			Sensors: []entities.Sensor{
-				{ID: "sensor1", FlowRate: 10.0},
-				{ID: "sensor2", FlowRate: 15.0},
-				{ID: "sensor3", FlowRate: 20.5},
-			},
-		},
-		"field2": {
-			ID:       "field2",
-			CropType: "wheat",
-			Sensors: []entities.Sensor{
-				{ID: "sensor4", FlowRate: 5.5},
-				{ID: "sensor5", FlowRate: 8.0},
-				{ID: "sensor6", FlowRate: 10.0},
-			},
-		},
-	}
+	// ---- ENV ----
+	host := mustEnv("RABBITMQ_HOST", "")
+	portStr := mustEnv("RABBITMQ_PORT", "1883")
+	user := mustEnv("RABBITMQ_USER", "")
+	pass := mustEnv("RABBITMQ_PASSWORD", "")
+	clientID := mustEnv("RABBITMQ_CLIENTID", "device-service")
+	grpcPort := mustEnv("GRPC_PORT", "50051")
+	sensorsPath := mustEnv("SENSORS_CONFIG_PATH", "/app/config/sensors-config.json")
+	exchange := mustEnv("RABBITMQ_EXCHANGE", "sensor_data")
 
-	// Legge le variabili d'ambiente
-	host := os.Getenv("RABBITMQ_HOST")
-	if host == "" {
-		host = "localhost"
-	}
-	portStr := os.Getenv("RABBITMQ_PORT")
-	if portStr == "" {
-		portStr = "1883"
-	}
-	port, err := strconv.Atoi(portStr)
+	topicTmpl := mustEnv("EVENT_STATECHANGE_TEMPLATE", "event/StateChange/{field}/{sensor}")
+
+	port, err := strconv.Atoi(strings.TrimSpace(portStr))
 	if err != nil {
-		log.Fatalf("Invalid RABBITMQ_PORT: %v", err)
+		log.Fatalf("invalid RABBITMQ_PORT: %v", err)
 	}
 
-	user := os.Getenv("RABBITMQ_USER")
-	if user == "" {
-		user = "guest"
+	// ---- Carica sensori: mappa field -> sensori ----
+	raw, err := os.ReadFile(sensorsPath)
+	if err != nil {
+		log.Fatalf("read sensors config: %v", err)
 	}
-	password := os.Getenv("RABBITMQ_PASSWORD")
-	if password == "" {
-		password = "guest"
+	var cfg map[string][]model.Sensor // {"field_1":[...]}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		log.Fatalf("unmarshal sensors config: %v", err)
+	}
+	fields := make(map[string]model.Field)
+	for fid, list := range cfg {
+		fields[fid] = model.Field{ID: fid, Sensors: list}
 	}
 
-	clientID := fmt.Sprintf("DeviceService-%s", os.Getenv("HOSTNAME"))
-	cfg := &rabbitmq.RabbitMQConfig{
+	// ---- MQTT (RabbitMQ con exchange "topic") ----
+	rmqc := &rabbitmq.RabbitMQConfig{
 		Host:     host,
 		Port:     port,
 		User:     user,
-		Password: password,
+		Password: pass,
 		ClientID: clientID,
+		Exchange: exchange,
+		Kind:     "topic",
 	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
-	client, err := rabbitmq.NewRabbitMQConn(cfg, ctx)
+	client, err := rabbitmq.NewRabbitMQConn(rmqc, ctx)
 	if err != nil {
-		log.Fatalf("Failed to connect to MQTT broker: %v", err)
+		log.Fatalf("MQTT connect error: %v", err)
 	}
 
-	consumer := rabbitmq.NewConsumer(client, "sensor/data", "sensor_data", nil)
-	publisher := rabbitmq.NewPublisher(client, "event/stateChangeEvent", "device_commands")
+	// factory per creare un publisher col topic calcolato
+	publisherFactory := func(topic string) rabbitmq.IPublisher {
+		return rabbitmq.NewPublisher(client, topic, rmqc.Exchange)
+	}
 
-	// Avvio DeviceService logica MQTT
-	svc := device.NewDeviceService(consumer, publisher, fields)
+	// ---- gRPC server ----
+	addr := ":" + grpcPort
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("listen %s: %v", addr, err)
+	}
+	grpcServer := grpc.NewServer()
+	pb.RegisterDeviceServiceServer(
+		grpcServer,
+		device.NewGrpcHandler(publisherFactory, topicTmpl, fields),
+	)
+
 	go func() {
-		log.Println("Starting DeviceService MQTT loop...")
-		svc.Start(ctx)
+		log.Printf("DeviceService gRPC %s; MQTT exchange '%s'; topics template '%s'",
+			addr, rmqc.Exchange, topicTmpl)
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("gRPC serve error: %v", err)
+		}
 	}()
 
-	// Avvio server gRPC
-	lis, err := net.Listen("tcp", ":50051")
-	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
-	}
-
-	grpcServer := grpc.NewServer()
-	pb.RegisterDeviceServiceServer(grpcServer, device.NewGrpcHandler(publisher, fields))
-
-	log.Println("DeviceService gRPC server listening on :50051")
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve gRPC: %v", err)
-	}
+	// ---- graceful shutdown ----
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	<-sigc
+	log.Println("shutting down...")
+	cancel()
+	time.Sleep(300 * time.Millisecond)
 }

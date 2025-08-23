@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: field-policy
+  namespace: fog
+data:
+  field-policy.json: |
+    {
+      "field_1": { "smt_pct": 25, "daily_limit_mm": 10 },
+      "field_2": { "smt_pct": 25, "daily_limit_mm": 10 }
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: weather-owm
+  namespace: fog
+type: Opaque
+stringData:
+  OWM_API_KEY: "CHANGE_ME"

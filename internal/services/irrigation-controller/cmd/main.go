@@ -2,120 +2,89 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	pb "github.com/LeonardoBeccarini/sdcc_project/deploy/gen/go/irrigation"
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model/messages"
-	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
-	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/joho/godotenv"
-	"google.golang.org/grpc"
+	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
-	"time"
+
+	controller "github.com/LeonardoBeccarini/sdcc_project/internal/services/irrigation-controller"
+	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 )
 
+func env(key, def string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	return v
+}
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return i
+}
+
 func main() {
-	err := godotenv.Load("internal/config/rabbitmq.env")
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// MQTT
+	host := env("RABBITMQ_HOST", "localhost")
+	port := envInt("RABBITMQ_PORT", 1883)
+	user := env("RABBITMQ_USER", "guest")
+	pass := env("RABBITMQ_PASSWORD", "guest")
+	exchange := env("RABBITMQ_EXCHANGE", "sensor_data")
+	clientID := fmt.Sprintf("IrrigationController-%s", env("HOSTNAME", "local"))
+
+	cfg := &rabbitmq.RabbitMQConfig{Host: host, Port: port, User: user, Password: pass, ClientID: clientID, Exchange: exchange}
+	mqClient, err := rabbitmq.NewRabbitMQConn(cfg, ctx)
 	if err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
-	}
-	portStr := os.Getenv("RABBITMQ_PORT")
-	if portStr == "" {
-		// Try to fetch MQTT service NodePort
-		out, err := exec.Command("kubectl", "get", "svc", "rabbitmq-mqtt", "-n", "rabbitmq", "-o", "jsonpath={.spec.ports[0].nodePort}").Output()
-		if err != nil {
-			log.Fatalf("Could not detect NodePort: %v", err)
-		}
-		portStr = string(out)
+		log.Fatalf("MQTT connect failed: %v", err)
 	}
 
-	port, err := strconv.Atoi(strings.TrimSpace(portStr))
+	aggregatedSub := env("AGGREGATED_SUB_TOPIC", "sensor/aggregated/#")
+	decisionTopicTmpl := env("IRRIGATION_DECISION_TOPIC_TMPL", "event/irrigationDecision/{field}/{sensor}")
+
+	consumer := rabbitmq.NewConsumer(mqClient, aggregatedSub, cfg.Exchange, nil)
+	decisionPublisher := rabbitmq.NewPublisher(mqClient, "event/irrigationDecision", cfg.Exchange)
+
+	// OpenWeather client
+	owmKey := env("OWM_API_KEY", "changeme")
+	wc := controller.NewOWMClient(owmKey)
+
+	// Device routing: field -> deviceService endpoint
+	mapStr := env("DEVICE_GRPC_ADDR_MAP", "field1=device-node1:50051,field2=device-node2:50051")
+	router, err := controller.NewDeviceRouter(ctx, mapStr)
 	if err != nil {
-		log.Fatalf("Invalid RABBITMQ_PORT: %v", err)
+		log.Fatalf("device router init: %v", err)
 	}
-	// RabbitMQ MQTT configuration
-	cfg := &rabbitmq.RabbitMQConfig{
-		Host:     os.Getenv("RABBITMQ_HOST"),
-		Port:     port,
-		User:     os.Getenv("RABBITMQ_USER"),
-		Password: os.Getenv("RABBITMQ_PASSWORD"),
-		ClientID: "dummyConsumer1",
-		Exchange: "sensor_data",
-	}
+	defer router.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Config file paths
+	policyPath := env("FIELD_POLICY_PATH", "/app/config/field-policy.json")
+	sensorsPath := env("SENSORS_CONFIG_PATH", "/app/config/sensors-config.json")
 
-	// Setup graceful shutdown on interrupt signals
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-		<-sigChan
-		log.Println("Shutdown signal received")
-		cancel()
-	}()
-
-	// Connect to MQTT broker
-	client, err := rabbitmq.NewRabbitMQConn(cfg, ctx)
+	ctrl, err := controller.NewController(
+		consumer,
+		decisionPublisher,
+		router,
+		wc,
+		policyPath,
+		sensorsPath,
+		decisionTopicTmpl,
+	)
 	if err != nil {
-		log.Fatalf("Failed to connect MQTT broker: %v", err)
+		log.Fatalf("controller init: %v", err)
 	}
-	conn, err := grpc.Dial("deviceservice:50051", grpc.WithInsecure())
-	if err != nil {
-		log.Fatalf("Failed to connect to DeviceService gRPC: %v", err)
-	}
-	defer conn.Close()
 
-	grpcClient := pb.NewDeviceServiceClient(conn)
-
-	// Handler function to process incoming aggregated data messages
-	handler := func(queue string, message mqtt.Message) error {
-		var aggregatedData messages.SensorData
-		err := json.Unmarshal(message.Payload(), &aggregatedData)
-		if err != nil {
-			log.Printf("Failed to unmarshal aggregated data: %v", err)
-			return err
-		}
-
-		log.Printf("Received Aggregated Data: SensorID=%s, Moisture=%d, Timestamp=%s",
-			aggregatedData.SensorID, aggregatedData.Moisture,
-			aggregatedData.Timestamp.Format("2006-01-02 15:04:05"))
-
-		// Esempio di decisione: irrigare se Moisture < 30
-		if aggregatedData.Moisture < 30 {
-			ctxGrpc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			resp, err := grpcClient.StartIrrigation(ctxGrpc, &pb.StartRequest{
-				FieldId:     aggregatedData.FieldID,
-				DurationMin: 20,
-			})
-			if err != nil {
-				log.Printf("Error calling StartIrrigation: %v", err)
-			} else {
-				log.Printf("DeviceService response: %s", resp.Message)
-			}
-		}
-
-		return nil
-	}
-	ctx, cancel = context.WithCancel(context.Background())
-	defer cancel()
-	// Create consumer subscribing to "sensor/aggregatedData" topic
-	consumer := rabbitmq.NewConsumer(client, "sensor/aggregatedData", cfg.Exchange, handler)
-
-	// Start consuming
-	consumer.ConsumeMessage(ctx)
-
-	// Block until context cancellation
-	<-ctx.Done()
-
-	// Disconnect cleanly
-	client.Disconnect(250)
-	log.Println("Dummy consumer stopped")
+	log.Printf("IrrigationController running. sub=%s decisions=%s routes=%s", aggregatedSub, decisionTopicTmpl, mapStr)
+	ctrl.Start(ctx)
 }

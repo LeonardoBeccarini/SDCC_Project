@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: device-service-1
+  namespace: edge
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: device-service-1 } }
+  template:
+    metadata:
+      labels: { app: device-service-1 }
+    spec:
+      nodeSelector: { role: edge1 }
+      containers:
+        - name: device-service
+          image: sdcc/device-service:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 50051
+              name: grpc
+          envFrom:
+            - configMapRef: { name: mqtt-common }
+            - secretRef: { name: mqtt-credentials }
+          env:
+            - { name: GRPC_PORT, value: "50051" }
+            - { name: RABBITMQ_CLIENTID, value: "device-1" }
+            - { name: EVENT_STATECHANGE_TEMPLATE, value: "event/StateChange/{field}/{sensor}" }
+            - { name: SENSORS_CONFIG_PATH, value: "/app/config/sensors-config.json" }
+          volumeMounts:
+            - { name: sensors-config, mountPath: /app/config/sensors-config.json, subPath: sensors-config.json }
+          livenessProbe:
+            tcpSocket: { port: grpc }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket: { port: grpc }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: sensors-config
+          configMap: { name: sensors-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: device-svc-field1
+  namespace: edge
+spec:
+  selector: { app: device-service-1 }
+  ports:
+    - port: 50051
+      targetPort: grpc
+      name: grpc
