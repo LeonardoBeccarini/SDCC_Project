@@ -250,3 +250,5 @@ func sensorLongitude(s model.Sensor) float64 {
 	}
 	return 0
 }
+
+//TODO il servizio da errore con l'API del tempo:  controller: weather error: owm status 401 (using defaults), SISTEMAREEEE

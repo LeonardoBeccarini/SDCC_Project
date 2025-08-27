@@ -45,13 +45,15 @@ docker build -t sdcc/sensor-simulator:local        -f "$ROOT_DIR/internal/sensor
 docker build -t sdcc/aggregator:local              -f "$ROOT_DIR/internal/services/aggregator/Dockerfile" "$ROOT_DIR"
 docker build -t sdcc/device-service:local          -f "$ROOT_DIR/internal/services/device/Dockerfile" "$ROOT_DIR"
 docker build -t sdcc/irrigation-controller:local   -f "$ROOT_DIR/internal/services/irrigation-controller/Dockerfile" "$ROOT_DIR"
+docker build -t sdcc/event-service:local  -f "$ROOT_DIR/internal/services/event/Dockerfile" "$ROOT_DIR"
 
 echo "==> Loading images into all minikube nodes"
 for img in \
   sdcc/sensor-simulator:local \
   sdcc/aggregator:local \
   sdcc/device-service:local \
-  sdcc/irrigation-controller:local
+  sdcc/irrigation-controller:local \
+  sdcc/event-service:local
 do
   minikube -p "$PROFILE" image load "$img"
 done

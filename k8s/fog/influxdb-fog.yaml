@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: influxdb-fog-auth
+  namespace: fog
+type: Opaque
+stringData:
+  # Valori di default per dev: cambiali in produzione
+  INFLUXDB_ADMIN_USER: "admin"
+  INFLUXDB_ADMIN_PASSWORD: "admin123"
+  INFLUXDB_ORG: "msut"
+  INFLUXDB_BUCKET: "events"
+  INFLUXDB_TOKEN: "9tNO2+ObKeJtQcQsYw5EgTv5OOZCknOvtwR7siI+6Go="
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: influxdb-fog
+  namespace: fog
+spec:
+  serviceName: influxdb-fog
+  replicas: 1
+  selector:
+    matchLabels:
+      app: influxdb-fog
+  template:
+    metadata:
+      labels:
+        app: influxdb-fog
+    spec:
+      nodeSelector:
+        role: fog
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: influxdb
+          image: influxdb:2.7
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8086
+          env:
+            - name: DOCKER_INFLUXDB_INIT_MODE
+              value: setup
+            - name: DOCKER_INFLUXDB_INIT_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-fog-auth
+                  key: INFLUXDB_ORG
+            - name: DOCKER_INFLUXDB_INIT_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-fog-auth
+                  key: INFLUXDB_BUCKET
+            - name: DOCKER_INFLUXDB_INIT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-fog-auth
+                  key: INFLUXDB_ADMIN_USER
+            - name: DOCKER_INFLUXDB_INIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-fog-auth
+                  key: INFLUXDB_ADMIN_PASSWORD
+            - name: DOCKER_INFLUXDB_INIT_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-fog-auth
+                  key: INFLUXDB_TOKEN
+            - name: DOCKER_INFLUXDB_INIT_RETENTION
+              value: "30d"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/influxdb2
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+      volumes:
+        # Persistenza locale sul disco del nodo fog
+        - name: data
+          hostPath:
+            path: /var/lib/influxdb2-fog
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb-fog
+  namespace: fog
+spec:
+  selector:
+    app: influxdb-fog
+  ports:
+    - name: http
+      port: 8086
+      targetPort: http
