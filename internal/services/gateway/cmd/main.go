@@ -3,18 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
-	"sync"
 	"time"
 
-	"github.com/sony/gobreaker"
+	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
+	"github.com/influxdata/influxdb-client-go/v2/api"
 )
 
-// ======== Modelli ========
+/************* MODELS *************/
 type Sensor struct {
 	ID     string  `json:"id"`
 	Value  float64 `json:"value"`
@@ -39,60 +38,164 @@ type Payload struct {
 	Stats       Stats        `json:"stats"`
 }
 
-// ======== Config ========
-type Config struct {
-	DeviceURL      string
-	PersistenceURL string
-	EventURL       string
-	AnalyticsURL   string
-
-	Port           string
-	Timeout        time.Duration // HTTP client timeout per chiamata
-	BreakerFails   int           // quante failure consecutive per aprire il CB
-	BreakerOpenSec int           // quanto resta Open prima di Half-Open
+/************* INFLUX CLIENT *************/
+type Influx struct {
+	client influxdb2.Client
+	query  api.QueryAPI
+	cfg    Config
 }
 
-func getenv(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
+func newInflux(cfg Config) *Influx {
+	c := influxdb2.NewClient(cfg.InfluxURL, cfg.InfluxToken)
+	return &Influx{client: c, query: c.QueryAPI(cfg.InfluxOrg), cfg: cfg}
 }
-func getenvInt(k string, def int) int {
-	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-func loadConfig() Config {
-	return Config{
-		DeviceURL:      getenv("DEVICE_URL", "http://localhost:5002"),
-		PersistenceURL: getenv("PERSISTENCE_URL", "http://localhost:5000"),
-		EventURL:       getenv("EVENT_URL", "http://localhost:5001"),
-		AnalyticsURL:   getenv("ANALYTICS_URL", "http://localhost:5003"),
-		Port:           getenv("PORT", "5009"),
-		Timeout:        time.Duration(getenvInt("TIMEOUT_MS", 3000)) * time.Millisecond,
-		BreakerFails:   getenvInt("BREAKER_FAILS", 5),
-		BreakerOpenSec: getenvInt("BREAKER_OPEN_SECS", 15),
-	}
-}
+func (ix *Influx) Close() { ix.client.Close() }
 
-// ======== HTTP utils ========
-func getJSON(cli *http.Client, ctx context.Context, url string, out any) error {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	res, err := cli.Do(req)
+func (ix *Influx) RecentIrrigations(ctx context.Context, n int) ([]Irrigation, error) {
+	flux := `
+from(bucket:"` + ix.cfg.InfluxBucket + `")
+|> range(start:-7d)
+|> filter(fn:(r)=> r._measurement=="system_event" and r.event_type=="irrigation.decision")
+|> sort(columns:["_time"], desc:true)
+|> limit(n:` + strconv.Itoa(n) + `)
+|> keep(columns: ["_time","sensor_id","_value","dose_mm"])
+`
+	res, err := ix.query.Query(ctx, flux)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer res.Body.Close()
-	if res.StatusCode >= 500 {
-		return errors.New("upstream 5xx")
+	defer res.Close()
+
+	out := make([]Irrigation, 0, n)
+	for res.Next() {
+		amt := 0
+		if v, ok := res.Record().ValueByKey("dose_mm").(float64); ok {
+			amt = int(v + 0.5)
+		} else if v, ok := res.Record().Value().(float64); ok {
+			amt = int(v + 0.5)
+		}
+		sid, _ := res.Record().ValueByKey("sensor_id").(string)
+		out = append(out, Irrigation{
+			SensorID: sid,
+			Amount:   amt,
+			Time:     res.Record().Time().Format("15:04"),
+		})
 	}
-	return json.NewDecoder(res.Body).Decode(out)
+	return out, res.Err()
 }
 
+func (ix *Influx) LatestSensors(ctx context.Context, metric string) ([]Sensor, error) {
+	flux := `
+from(bucket:"` + ix.cfg.InfluxBucket + `")
+|> range(start:-6h)
+|> filter(fn:(r)=> r._measurement=="sensors" and r.metric=="` + metric + `")
+|> group(columns:["sensor_id"])
+|> last()
+|> keep(columns:["sensor_id","_value"])
+`
+	res, err := ix.query.Query(ctx, flux)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+
+	var out []Sensor
+	for res.Next() {
+		id, _ := res.Record().ValueByKey("sensor_id").(string)
+		val, _ := res.Record().Value().(float64)
+		out = append(out, Sensor{ID: id, Value: val})
+	}
+	return out, res.Err()
+}
+
+func (ix *Influx) LatestStatuses(ctx context.Context) (map[string]string, error) {
+	flux := `
+from(bucket:"` + ix.cfg.InfluxBucket + `")
+|> range(start:-7d)
+|> filter(fn:(r)=> r._measurement=="system_event" and r.event_type=="device.state_change")
+|> group(columns:["sensor_id"])
+|> last()
+|> keep(columns:["sensor_id","status","_value"])
+`
+	res, err := ix.query.Query(ctx, flux)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+
+	out := map[string]string{}
+	for res.Next() {
+		id, _ := res.Record().ValueByKey("sensor_id").(string)
+		st, _ := res.Record().ValueByKey("status").(string)
+		if st == "" {
+			if v, ok := res.Record().Value().(float64); ok && v > 0 {
+				st = "on"
+			} else {
+				st = "off"
+			}
+		}
+		out[id] = st
+	}
+	return out, res.Err()
+}
+
+func (ix *Influx) MetricStats(ctx context.Context, metric string) (Stats, error) {
+	st := Stats{}
+	// mean
+	fluxMean := `
+from(bucket:"` + ix.cfg.InfluxBucket + `")
+|> range(start:-6h)
+|> filter(fn:(r)=> r._measurement=="sensors" and r.metric=="` + metric + `")
+|> mean()
+|> keep(columns:["_value"])
+|> last()
+`
+	if res, err := ix.query.Query(ctx, fluxMean); err == nil {
+		for res.Next() {
+			if v, ok := res.Record().Value().(float64); ok {
+				st.Mean = v
+			}
+		}
+		res.Close()
+	}
+	// max
+	fluxMax := `
+from(bucket:"` + ix.cfg.InfluxBucket + `")
+|> range(start:-6h)
+|> filter(fn:(r)=> r._measurement=="sensors" and r.metric=="` + metric + `")
+|> max()
+|> keep(columns:["_value"])
+|> last()
+`
+	if res, err := ix.query.Query(ctx, fluxMax); err == nil {
+		for res.Next() {
+			if v, ok := res.Record().Value().(float64); ok {
+				st.Max = v
+			}
+		}
+		res.Close()
+	}
+	// min
+	fluxMin := `
+from(bucket:"` + ix.cfg.InfluxBucket + `")
+|> range(start:-6h)
+|> filter(fn:(r)=> r._measurement=="sensors" and r.metric=="` + metric + `")
+|> min()
+|> keep(columns:["_value"])
+|> last()
+`
+	if res, err := ix.query.Query(ctx, fluxMin); err == nil {
+		for res.Next() {
+			if v, ok := res.Record().Value().(float64); ok {
+				st.Min = v
+			}
+		}
+		res.Close()
+	}
+	return st, nil
+}
+
+/************* HELPERS *************/
 func applyStatus(vals []Sensor, statuses map[string]string) []Sensor {
 	for i := range vals {
 		if s, ok := statuses[vals[i].ID]; ok {
@@ -104,163 +207,116 @@ func applyStatus(vals []Sensor, statuses map[string]string) []Sensor {
 	return vals
 }
 
-// ======== Client con Circuit Breaker + cache last-good ========
-type CBClient struct {
-	http *http.Client
-
-	cbDevice    *gobreaker.CircuitBreaker
-	cbPersist   *gobreaker.CircuitBreaker
-	cbEvent     *gobreaker.CircuitBreaker
-	cbAnalytics *gobreaker.CircuitBreaker
-
-	mu           sync.RWMutex
-	lastStatuses map[string]string
-	lastValues   []Sensor
-	lastEvents   []Irrigation
-	lastStats    Stats
+/************* HTTP FALLBACK CLIENT *************/
+type Upstream struct {
+	http    *http.Client
+	timeout time.Duration
 }
 
-func newCBClient(timeout time.Duration, failThreshold int, openSecs int) *CBClient {
-	mk := func(name string) *gobreaker.CircuitBreaker {
-		st := gobreaker.Settings{
-			Name:        name,
-			Interval:    60 * time.Second,                      // finestra statistica
-			Timeout:     time.Duration(openSecs) * time.Second, // Open -> Half-Open
-			MaxRequests: 1,                                     // probe in Half-Open
-			ReadyToTrip: func(c gobreaker.Counts) bool {
-				return c.ConsecutiveFailures >= uint32(failThreshold)
-			},
-		}
-		return gobreaker.NewCircuitBreaker(st)
-	}
-	return &CBClient{
-		http:         &http.Client{Timeout: timeout},
-		cbDevice:     mk("device"),
-		cbPersist:    mk("persistence"),
-		cbEvent:      mk("event"),
-		cbAnalytics:  mk("analytics"),
-		lastStatuses: map[string]string{},
+func NewUpstream(timeoutMs int) *Upstream {
+	return &Upstream{
+		http:    &http.Client{Timeout: time.Duration(timeoutMs) * time.Millisecond},
+		timeout: time.Duration(timeoutMs) * time.Millisecond,
 	}
 }
 
-func (c *CBClient) GetStatuses(ctx context.Context, base string) map[string]string {
-	call := func() (interface{}, error) {
-		var s map[string]string
-		if err := getJSON(c.http, ctx, base+"/sensors/status", &s); err != nil {
-			return nil, err
-		}
-		c.mu.Lock()
-		c.lastStatuses = s
-		c.mu.Unlock()
-		return s, nil
-	}
-	v, err := c.cbDevice.Execute(call)
+func (u *Upstream) getJSON(ctx context.Context, url string, out any) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	res, err := u.http.Do(req)
 	if err != nil {
-		// fallback: ultimo valore buono oppure vuoto
-		c.mu.RLock()
-		defer c.mu.RUnlock()
-		out := make(map[string]string, len(c.lastStatuses))
-		for k, v := range c.lastStatuses {
-			out[k] = v
-		}
-		return out
+		return err
 	}
-	return v.(map[string]string)
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("upstream %s status=%d", url, res.StatusCode)
+	}
+	return json.NewDecoder(res.Body).Decode(out)
 }
 
-func (c *CBClient) GetValues(ctx context.Context, base string) []Sensor {
-	call := func() (interface{}, error) {
-		var vals []Sensor
-		if err := getJSON(c.http, ctx, base+"/data/latest", &vals); err != nil {
-			return nil, err
-		}
-		c.mu.Lock()
-		c.lastValues = vals
-		c.mu.Unlock()
-		return vals, nil
-	}
-	v, err := c.cbPersist.Execute(call)
-	if err != nil {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
-		return append([]Sensor(nil), c.lastValues...)
-	}
-	return v.([]Sensor)
+func (u *Upstream) GetStatuses(ctx context.Context, base string) map[string]string {
+	type resp map[string]string
+	var out resp
+	_ = u.getJSON(ctx, base+"/sensors/status", &out)
+	return out
+}
+func (u *Upstream) GetValues(ctx context.Context, base string) []Sensor {
+	var out []Sensor
+	_ = u.getJSON(ctx, base+"/data/latest", &out)
+	return out
+}
+func (u *Upstream) GetEvents(ctx context.Context, base string) []Irrigation {
+	var out []Irrigation
+	_ = u.getJSON(ctx, base+"/irrigations/recent", &out)
+	return out
+}
+func (u *Upstream) GetStats(ctx context.Context, base string) Stats {
+	var out Stats
+	_ = u.getJSON(ctx, base+"/analytics/stats", &out)
+	return out
 }
 
-func (c *CBClient) GetEvents(ctx context.Context, base string) []Irrigation {
-	call := func() (interface{}, error) {
-		var ev []Irrigation
-		if err := getJSON(c.http, ctx, base+"/irrigations/recent", &ev); err != nil {
-			return nil, err
-		}
-		c.mu.Lock()
-		c.lastEvents = ev
-		c.mu.Unlock()
-		return ev, nil
-	}
-	v, err := c.cbEvent.Execute(call)
-	if err != nil {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
-		return append([]Irrigation(nil), c.lastEvents...)
-	}
-	return v.([]Irrigation)
-}
-
-func (c *CBClient) GetStats(ctx context.Context, base string) Stats {
-	call := func() (interface{}, error) {
-		var st Stats
-		if err := getJSON(c.http, ctx, base+"/analytics/stats", &st); err != nil {
-			return nil, err
-		}
-		c.mu.Lock()
-		c.lastStats = st
-		c.mu.Unlock()
-		return st, nil
-	}
-	v, err := c.cbAnalytics.Execute(call)
-	if err != nil {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
-		return c.lastStats
-	}
-	return v.(Stats)
-}
-
-// ======== main / HTTP server ========
+/************* MAIN (HTTP) *************/
 func main() {
 	cfg := loadConfig()
-	cli := newCBClient(cfg.Timeout, cfg.BreakerFails, cfg.BreakerOpenSec)
+	ix := newInflux(cfg)
+	defer ix.Close()
 
-	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok"))
 	})
 
 	http.HandleFunc("/dashboard/data", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		ctx, cancel := context.WithTimeout(r.Context(), cfg.Timeout)
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.TimeoutMs)*time.Millisecond)
 		defer cancel()
 
-		// chiamate (semplici, in serie; puoi parallelizzarle più avanti con errgroup)
-		statuses := cli.GetStatuses(ctx, cfg.DeviceURL)
-		values := cli.GetValues(ctx, cfg.PersistenceURL)
-		events := cli.GetEvents(ctx, cfg.EventURL)
-		stats := cli.GetStats(ctx, cfg.AnalyticsURL)
+		up := NewUpstream(cfg.TimeoutMs)
 
-		resp := Payload{
-			Sensors:     applyStatus(values, statuses),
-			Irrigations: events,
-			Stats:       stats,
+		// 1) tentativo via Influx (primario)
+		statuses, errS := ix.LatestStatuses(ctx)
+		events, errE := ix.RecentIrrigations(ctx, 20)
+		stats, errT := ix.MetricStats(ctx, cfg.MetricName)
+		values, errV := ix.LatestSensors(ctx, cfg.MetricName)
+
+		okInflux := (errS == nil && errE == nil && errT == nil && errV == nil)
+
+		var resp Payload
+		if okInflux {
+			resp = Payload{
+				Sensors:     applyStatus(values, statuses),
+				Irrigations: events,
+				Stats:       stats,
+			}
+		} else {
+			// 2) Fallback ai microservizi REST
+			statuses2 := up.GetStatuses(ctx, cfg.DeviceURL)
+			values2 := up.GetValues(ctx, cfg.PersistenceURL)
+			events2 := up.GetEvents(ctx, cfg.EventURL)
+			stats2 := up.GetStats(ctx, cfg.AnalyticsURL)
+
+			if len(values2) > 0 || len(events2) > 0 || (stats2 != (Stats{})) || len(statuses2) > 0 {
+				resp = Payload{
+					Sensors:     applyStatus(values2, statuses2),
+					Irrigations: events2,
+					Stats:       stats2,
+				}
+			} else {
+				resp = Payload{
+					Sensors:     applyStatus(values, statuses),
+					Irrigations: events,
+					Stats:       stats,
+				}
+			}
 		}
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
-
-		log.Printf("GET /dashboard/data latency=%dms sensors=%d events=%d",
-			time.Since(start).Milliseconds(), len(resp.Sensors), len(resp.Irrigations))
+		log.Printf("GET /dashboard/data [%dms] influxOK=%v sensors=%d events=%d",
+			time.Since(start).Milliseconds(), okInflux, len(resp.Sensors), len(resp.Irrigations))
 	})
 
 	addr := ":" + cfg.Port
-	log.Printf("API Gateway (CB-enabled) in ascolto su %s", addr)
+	log.Printf("Gateway listening on %s (Influx=%s bucket=%s org=%s metric=%s)",
+		addr, cfg.InfluxURL, cfg.InfluxBucket, cfg.InfluxOrg, cfg.MetricName)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
