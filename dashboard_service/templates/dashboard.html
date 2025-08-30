@@ -3,6 +3,7 @@
 <head>
     <title>Dashboard Agricoltura</title>
     <link rel="stylesheet" href="/static/style.css">
+    <meta charset="utf-8"/>
 </head>
 <body>
 <header>
@@ -21,21 +22,19 @@
 
     <section class="card" id="analytics">
         <h2>Analytics</h2>
-        <p>Media giornaliera: {{ stats.mean }}%</p>
-        <p>Massimo: {{ stats.max }}%</p>
-        <p>Minimo: {{ stats.min }}%</p>
-        <!-- (In futuro: qui va un grafico JS tipo Chart.js) -->
+        <p>Media (6h): {{ stats.mean }}%</p>
+        <p>Massimo (6h): {{ stats.max }}%</p>
+        <p>Minimo (6h): {{ stats.min }}%</p>
     </section>
 
     <section class="card fullwidth" id="log">
-        <h2>Log Eventi</h2>
+        <h2>Irrigazioni recenti</h2>
         <ul>
-            {% for ev in events %}
-            <li>{{ ev.time }} — {{ ev.description }}</li>
+            {% for ev in irrigations %}
+            <li>{{ ev.time }} — sensore {{ ev.sensor_id }}: {{ ev.amount }} mm</li>
             {% endfor %}
         </ul>
     </section>
 </main>
 </body>
 </html>
-

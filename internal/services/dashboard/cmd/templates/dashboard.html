@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="utf-8" />
+    <title>Dashboard Agricoltura</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+    <h1>Dashboard Monitoraggio Terreno</h1>
+</header>
+
+<main class="grid">
+    <section class="card">
+        <h2>Livelli Umidità</h2>
+        <ul>
+            {% for s in sensors %}
+            <li><strong>{{ s.id }}</strong>: {{ s.value }}% ({{ s.status }})</li>
+            {% else %}
+            <li>Nessun dato (ancora).</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section class="card">
+        <h2>Analytics (ultime 6h)</h2>
+        <p>Media: {{ stats.mean or "—" }}%</p>
+        <p>Max: {{ stats.max or "—" }}%</p>
+        <p>Min: {{ stats.min or "—" }}%</p>
+    </section>
+
+    <section class="card fullwidth">
+        <h2>Irrigazioni recenti</h2>
+        <ul>
+            {% for ev in irrigations %}
+            <li>{{ ev.time }} — sensore {{ ev.sensor_id }}: {{ ev.amount }} mm</li>
+            {% else %}
+            <li>Nessuna irrigazione recente.</li>
+            {% endfor %}
+        </ul>
+    </section>
+</main>
+</body>
+</html>
