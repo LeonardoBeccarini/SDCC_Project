@@ -1,0 +1,29 @@
+# k8s/event-quick-tunnel.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-quick-tunnel
+  namespace: fog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: event-quick-tunnel
+  template:
+    metadata:
+      labels:
+        app: event-quick-tunnel
+    spec:
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:latest
+          args:
+            - tunnel
+            - --no-autoupdate
+            - --url
+            - http://event-service.fog.svc.cluster.local:8080
+            - --metrics
+            - 0.0.0.0:2000   # opzionale: metriche
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "200m", memory: "128Mi" }

@@ -107,6 +107,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", event.NewHealthHandler(mqttClient, influx, writer))
 	mux.Handle("/readyz", event.NewReadyHandler(mqttClient, influx, writer, 2*time.Second))
+	mux.Handle("/irrigations/recent", event.NewIrrigationsHandler(influx, cfg.InfluxOrg, cfg.InfluxBucket))
+
 	hs := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
 		Handler:           mux,

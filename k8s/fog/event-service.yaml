@@ -62,9 +62,11 @@ metadata:
   name: event-service
   namespace: fog
 spec:
+  type: NodePort
   selector:
     app: event-service
   ports:
     - name: http
       port: 8080
       targetPort: http
+      nodePort: 30080   # porta esterna del nodo (persistente)

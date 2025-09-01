@@ -6,24 +6,27 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
-	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
-	"github.com/influxdata/influxdb-client-go/v2/api"
+	// modelli dal progetto
+	ents "github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
+
+	// circuit breaker
+	"github.com/sony/gobreaker"
 )
 
-/************* MODELS *************/
+/************* MODELS (DTO verso la dashboard) *************/
+// NB: usiamo entities.SensorState per lo status
 type Sensor struct {
-	ID     string  `json:"id"`
-	Value  float64 `json:"value"`
-	Status string  `json:"status"`
+	ID     string           `json:"id"`
+	Value  float64          `json:"value"`
+	Status ents.SensorState `json:"status"`
 }
 
 type Irrigation struct {
 	SensorID string `json:"sensor_id"`
-	Amount   int    `json:"amount"`
-	Time     string `json:"time"`
+	Amount   int    `json:"amount"` // dose in mm (arrotondata)
+	Time     string `json:"time"`   // RFC3339
 }
 
 type Stats struct {
@@ -38,176 +41,7 @@ type Payload struct {
 	Stats       Stats        `json:"stats"`
 }
 
-/************* INFLUX CLIENT *************/
-type Influx struct {
-	client influxdb2.Client
-	query  api.QueryAPI
-	cfg    Config
-}
-
-func newInflux(cfg Config) *Influx {
-	c := influxdb2.NewClient(cfg.InfluxURL, cfg.InfluxToken)
-	return &Influx{client: c, query: c.QueryAPI(cfg.InfluxOrg), cfg: cfg}
-}
-func (ix *Influx) Close() { ix.client.Close() }
-
-func (ix *Influx) RecentIrrigations(ctx context.Context, n int) ([]Irrigation, error) {
-	flux := `
-from(bucket:"` + ix.cfg.InfluxBucket + `")
-|> range(start:-7d)
-|> filter(fn:(r)=> r._measurement=="system_event" and r.event_type=="irrigation.decision")
-|> sort(columns:["_time"], desc:true)
-|> limit(n:` + strconv.Itoa(n) + `)
-|> keep(columns: ["_time","sensor_id","_value","dose_mm"])
-`
-	res, err := ix.query.Query(ctx, flux)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Close()
-
-	out := make([]Irrigation, 0, n)
-	for res.Next() {
-		amt := 0
-		if v, ok := res.Record().ValueByKey("dose_mm").(float64); ok {
-			amt = int(v + 0.5)
-		} else if v, ok := res.Record().Value().(float64); ok {
-			amt = int(v + 0.5)
-		}
-		sid, _ := res.Record().ValueByKey("sensor_id").(string)
-		out = append(out, Irrigation{
-			SensorID: sid,
-			Amount:   amt,
-			Time:     res.Record().Time().Format("15:04"),
-		})
-	}
-	return out, res.Err()
-}
-
-func (ix *Influx) LatestSensors(ctx context.Context, metric string) ([]Sensor, error) {
-	flux := `
-from(bucket:"` + ix.cfg.InfluxBucket + `")
-|> range(start:-6h)
-|> filter(fn:(r)=> r._measurement=="sensors" and r.metric=="` + metric + `")
-|> group(columns:["sensor_id"])
-|> last()
-|> keep(columns:["sensor_id","_value"])
-`
-	res, err := ix.query.Query(ctx, flux)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Close()
-
-	var out []Sensor
-	for res.Next() {
-		id, _ := res.Record().ValueByKey("sensor_id").(string)
-		val, _ := res.Record().Value().(float64)
-		out = append(out, Sensor{ID: id, Value: val})
-	}
-	return out, res.Err()
-}
-
-func (ix *Influx) LatestStatuses(ctx context.Context) (map[string]string, error) {
-	flux := `
-from(bucket:"` + ix.cfg.InfluxBucket + `")
-|> range(start:-7d)
-|> filter(fn:(r)=> r._measurement=="system_event" and r.event_type=="device.state_change")
-|> group(columns:["sensor_id"])
-|> last()
-|> keep(columns:["sensor_id","status","_value"])
-`
-	res, err := ix.query.Query(ctx, flux)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Close()
-
-	out := map[string]string{}
-	for res.Next() {
-		id, _ := res.Record().ValueByKey("sensor_id").(string)
-		st, _ := res.Record().ValueByKey("status").(string)
-		if st == "" {
-			if v, ok := res.Record().Value().(float64); ok && v > 0 {
-				st = "on"
-			} else {
-				st = "off"
-			}
-		}
-		out[id] = st
-	}
-	return out, res.Err()
-}
-
-func (ix *Influx) MetricStats(ctx context.Context, metric string) (Stats, error) {
-	st := Stats{}
-	// mean
-	fluxMean := `
-from(bucket:"` + ix.cfg.InfluxBucket + `")
-|> range(start:-6h)
-|> filter(fn:(r)=> r._measurement=="sensors" and r.metric=="` + metric + `")
-|> mean()
-|> keep(columns:["_value"])
-|> last()
-`
-	if res, err := ix.query.Query(ctx, fluxMean); err == nil {
-		for res.Next() {
-			if v, ok := res.Record().Value().(float64); ok {
-				st.Mean = v
-			}
-		}
-		res.Close()
-	}
-	// max
-	fluxMax := `
-from(bucket:"` + ix.cfg.InfluxBucket + `")
-|> range(start:-6h)
-|> filter(fn:(r)=> r._measurement=="sensors" and r.metric=="` + metric + `")
-|> max()
-|> keep(columns:["_value"])
-|> last()
-`
-	if res, err := ix.query.Query(ctx, fluxMax); err == nil {
-		for res.Next() {
-			if v, ok := res.Record().Value().(float64); ok {
-				st.Max = v
-			}
-		}
-		res.Close()
-	}
-	// min
-	fluxMin := `
-from(bucket:"` + ix.cfg.InfluxBucket + `")
-|> range(start:-6h)
-|> filter(fn:(r)=> r._measurement=="sensors" and r.metric=="` + metric + `")
-|> min()
-|> keep(columns:["_value"])
-|> last()
-`
-	if res, err := ix.query.Query(ctx, fluxMin); err == nil {
-		for res.Next() {
-			if v, ok := res.Record().Value().(float64); ok {
-				st.Min = v
-			}
-		}
-		res.Close()
-	}
-	return st, nil
-}
-
-/************* HELPERS *************/
-func applyStatus(vals []Sensor, statuses map[string]string) []Sensor {
-	for i := range vals {
-		if s, ok := statuses[vals[i].ID]; ok {
-			vals[i].Status = s
-		} else {
-			vals[i].Status = "unknown"
-		}
-	}
-	return vals
-}
-
-/************* HTTP FALLBACK CLIENT *************/
+/************* UPSTREAM REST CLIENT *************/
 type Upstream struct {
 	http    *http.Client
 	timeout time.Duration
@@ -228,41 +62,96 @@ func (u *Upstream) getJSON(ctx context.Context, url string, out any) error {
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("upstream %s status=%d", url, res.StatusCode)
+		return fmt.Errorf("GET %s -> %s", url, res.Status)
 	}
 	return json.NewDecoder(res.Body).Decode(out)
 }
 
-func (u *Upstream) GetStatuses(ctx context.Context, base string) map[string]string {
-	type resp map[string]string
-	var out resp
-	_ = u.getJSON(ctx, base+"/sensors/status", &out)
+// Device-Service: restituisce map[sensorID]state
+func (u *Upstream) GetStatuses(ctx context.Context, base string) map[string]ents.SensorState {
+	type raw map[string]string
+	var r raw
+	_ = u.getJSON(ctx, base+"/sensors/status", &r)
+
+	out := make(map[string]ents.SensorState, len(r))
+	for k, v := range r {
+		out[k] = ents.SensorState(v)
+	}
 	return out
 }
+
+// Persistence-Service: restituisce []Sensor (id,value)
 func (u *Upstream) GetValues(ctx context.Context, base string) []Sensor {
 	var out []Sensor
 	_ = u.getJSON(ctx, base+"/data/latest", &out)
 	return out
 }
-func (u *Upstream) GetEvents(ctx context.Context, base string) []Irrigation {
+
+// Event-Service: restituisce []Irrigation (DTO semplice)
+func (u *Upstream) GetEvents(ctx context.Context, base string) ([]Irrigation, error) {
 	var out []Irrigation
-	_ = u.getJSON(ctx, base+"/irrigations/recent", &out)
-	return out
+	if err := u.getJSON(ctx, base+"/irrigations/recent", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
+
+// Analytics-Service: restituisce Stats
 func (u *Upstream) GetStats(ctx context.Context, base string) Stats {
 	var out Stats
 	_ = u.getJSON(ctx, base+"/analytics/stats", &out)
 	return out
 }
 
-/************* MAIN (HTTP) *************/
+/************* HELPERS *************/
+func applyStatus(values []Sensor, statuses map[string]ents.SensorState) []Sensor {
+	if len(values) == 0 {
+		return nil
+	}
+	m := make(map[string]ents.SensorState, len(statuses))
+	for k, v := range statuses {
+		m[k] = v
+	}
+	out := make([]Sensor, 0, len(values))
+	for _, s := range values {
+		s.Status = m[s.ID]
+		out = append(out, s)
+	}
+	return out
+}
+
+/************* MAIN *************/
+var (
+	eventCB       *gobreaker.CircuitBreaker
+	deviceCB      *gobreaker.CircuitBreaker
+	persistenceCB *gobreaker.CircuitBreaker
+	analyticsCB   *gobreaker.CircuitBreaker
+
+	lastGoodEvents []Irrigation
+)
+
+func mkCB(name string, fails, openMs, intervalMs int) *gobreaker.CircuitBreaker {
+	return gobreaker.NewCircuitBreaker(gobreaker.Settings{
+		Name:     name,
+		Interval: time.Duration(intervalMs) * time.Millisecond,
+		Timeout:  time.Duration(openMs) * time.Millisecond,
+		ReadyToTrip: func(c gobreaker.Counts) bool {
+			return c.ConsecutiveFailures >= uint32(fails)
+		},
+	})
+}
+
 func main() {
 	cfg := loadConfig()
-	ix := newInflux(cfg)
-	defer ix.Close()
+
+	// Circuit breakers
+	eventCB = mkCB("event-service", cfg.CBEventFails, cfg.CBEventOpenMs, cfg.CBEventIntervalMs)
+	deviceCB = mkCB("device-service", cfg.CBRestFails, cfg.CBRestOpenMs, cfg.CBRestIntervalMs)
+	persistenceCB = mkCB("persistence-service", cfg.CBRestFails, cfg.CBRestOpenMs, cfg.CBRestIntervalMs)
+	analyticsCB = mkCB("analytics-service", cfg.CBRestFails, cfg.CBRestOpenMs, cfg.CBRestIntervalMs)
 
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	http.HandleFunc("/dashboard/data", func(w http.ResponseWriter, r *http.Request) {
@@ -272,51 +161,78 @@ func main() {
 
 		up := NewUpstream(cfg.TimeoutMs)
 
-		// 1) tentativo via Influx (primario)
-		statuses, errS := ix.LatestStatuses(ctx)
-		events, errE := ix.RecentIrrigations(ctx, 20)
-		stats, errT := ix.MetricStats(ctx, cfg.MetricName)
-		values, errV := ix.LatestSensors(ctx, cfg.MetricName)
-
-		okInflux := (errS == nil && errE == nil && errT == nil && errV == nil)
-
-		var resp Payload
-		if okInflux {
-			resp = Payload{
-				Sensors:     applyStatus(values, statuses),
-				Irrigations: events,
-				Stats:       stats,
+		// === (1) IRRIGATIONS: REST con Circuit Breaker (no Influx fallback) ===
+		var irrigations []Irrigation
+		if res, err := eventCB.Execute(func() (any, error) {
+			ev, err := up.GetEvents(ctx, cfg.EventURL)
+			if err != nil || len(ev) == 0 {
+				if err == nil {
+					err = fmt.Errorf("empty events")
+				}
+				return nil, err
 			}
+			return ev, nil
+		}); err == nil {
+			irrigations = res.([]Irrigation)
+			lastGoodEvents = irrigations
 		} else {
-			// 2) Fallback ai microservizi REST
-			statuses2 := up.GetStatuses(ctx, cfg.DeviceURL)
-			values2 := up.GetValues(ctx, cfg.PersistenceURL)
-			events2 := up.GetEvents(ctx, cfg.EventURL)
-			stats2 := up.GetStats(ctx, cfg.AnalyticsURL)
-
-			if len(values2) > 0 || len(events2) > 0 || (stats2 != (Stats{})) || len(statuses2) > 0 {
-				resp = Payload{
-					Sensors:     applyStatus(values2, statuses2),
-					Irrigations: events2,
-					Stats:       stats2,
-				}
-			} else {
-				resp = Payload{
-					Sensors:     applyStatus(values, statuses),
-					Irrigations: events,
-					Stats:       stats,
-				}
-			}
+			// usa l'ultima cache valida (se presente)
+			irrigations = lastGoodEvents
 		}
 
+		// === (2) SENSORS / STATS: ONLY REST (ognuno con il proprio CB) ===
+		var (
+			statuses map[string]ents.SensorState
+			values   []Sensor
+			stats    Stats
+		)
+
+		if res, err := deviceCB.Execute(func() (any, error) {
+			m := up.GetStatuses(ctx, cfg.DeviceURL)
+			if len(m) == 0 {
+				return nil, fmt.Errorf("empty statuses")
+			}
+			return m, nil
+		}); err == nil {
+			statuses = res.(map[string]ents.SensorState)
+		}
+
+		if res, err := persistenceCB.Execute(func() (any, error) {
+			v := up.GetValues(ctx, cfg.PersistenceURL)
+			if len(v) == 0 {
+				return nil, fmt.Errorf("empty values")
+			}
+			return v, nil
+		}); err == nil {
+			values = res.([]Sensor)
+		}
+
+		if res, err := analyticsCB.Execute(func() (any, error) {
+			s := up.GetStats(ctx, cfg.AnalyticsURL)
+			if s == (Stats{}) {
+				return nil, fmt.Errorf("empty stats")
+			}
+			return s, nil
+		}); err == nil {
+			stats = res.(Stats)
+		}
+
+		sensors := applyStatus(values, statuses)
+
+		resp := Payload{
+			Sensors:     sensors,
+			Irrigations: irrigations,
+			Stats:       stats,
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
-		log.Printf("GET /dashboard/data [%dms] influxOK=%v sensors=%d events=%d",
-			time.Since(start).Milliseconds(), okInflux, len(resp.Sensors), len(resp.Irrigations))
+
+		log.Printf("GET /dashboard/data [%dms] cb[event]=%v cb[dev]=%v cb[pers]=%v cb[an]=%v sensors=%d events=%d",
+			time.Since(start).Milliseconds(), eventCB.State(), deviceCB.State(), persistenceCB.State(), analyticsCB.State(),
+			len(resp.Sensors), len(resp.Irrigations))
 	})
 
 	addr := ":" + cfg.Port
-	log.Printf("Gateway listening on %s (Influx=%s bucket=%s org=%s metric=%s)",
-		addr, cfg.InfluxURL, cfg.InfluxBucket, cfg.InfluxOrg, cfg.MetricName)
+	log.Printf("gateway listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
