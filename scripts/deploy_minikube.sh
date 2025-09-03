@@ -3,10 +3,10 @@ set -euo pipefail
 
 # ========= Config =========
 PROFILE="${PROFILE:-sdcc-cluster}"
-K8S_VERSION="${K8S_VERSION:-stable}"
+K8S_VERSION="${K8S_VERSION:-v1.30.5}"
 NODES="${NODES:-5}"   # 1 control-plane + NODES-1 workers
 CPUS="${CPUS:-4}"
-MEMORY="${MEMORY:-1900}"
+MEMORY="${MEMORY:-3000}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 K8S_DIR="${K8S_DIR:-$ROOT_DIR/k8s}"
@@ -19,10 +19,17 @@ command -v minikube >/dev/null || { echo "minikube not found"; exit 1; }
 command -v kubectl >/dev/null || { echo "kubectl not found"; exit 1; }
 command -v docker  >/dev/null || { echo "docker not found"; exit 1; }
 
-# ========= Start minikube =========
+# ========= Start minikube =========    QUESTA QUI LASCIALA COME È
 if ! minikube -p "$PROFILE" status >/dev/null 2>&1; then
   echo "==> Starting minikube profile '$PROFILE' with $NODES nodes..."
-  minikube start -p "$PROFILE" --kubernetes-version="$K8S_VERSION" --nodes="$NODES" --cpus="$CPUS" --memory="$MEMORY"
+  minikube start -p "$PROFILE" \
+    --kubernetes-version="$K8S_VERSION" \
+    --nodes="$NODES" \
+    --cpus="$CPUS" \
+    --memory="$MEMORY" \
+    --container-runtime=containerd \
+    --extra-config=kubelet.cgroup-driver=systemd \
+    --delete-on-failure
 else
   echo "==> Minikube profile '$PROFILE' already running"
 fi
@@ -98,6 +105,23 @@ echo "RabbitMQ MQTT  : $MINIKUBE_IP:31883  (user: mqtt_user, pass: mqtt_pwd)"
 echo "RabbitMQ AMQP  : $MINIKUBE_IP:30672"
 echo "RabbitMQ Mgmt  : http://$MINIKUBE_IP:31672"
 echo ""
+# Estrazione automatica dell'URL dal log
+URL=$(kubectl -n fog logs deploy/event-quick-tunnel | grep -m1 -o 'https://[^ ]*trycloudflare.com')
+
+# Controllo se l'URL è stato estratto correttamente
+if [ -z "$URL" ]; then
+  echo "Errore: URL non trovato."
+  exit 1
+fi
+
+# Mostra l'URL estratto
+echo "URL estratto: $URL"
+
+# Aggiornamento della configurazione su Elastic Beanstalk
+aws elasticbeanstalk update-environment --environment-name sdcc-gateway-env --option-settings "Namespace=aws:elasticbeanstalk:application:environment,OptionName=EVENT_URL,Value=$URL"
+# Messaggio di conferma
+echo "Configurazione aggiornata su AWS Elastic Beanstalk con l'URL: $URL."
+
 echo "Done."
 
 #----------- PER ESEGUIRLO -----------
