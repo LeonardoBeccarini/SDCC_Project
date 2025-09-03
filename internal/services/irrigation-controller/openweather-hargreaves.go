@@ -38,8 +38,11 @@ func (c *OWMClient) GetDailyET0AndRain(ctx context.Context, lat, lon float64, da
 	if c == nil || c.apiKey == "" {
 		return 0, 0, fmt.Errorf("OWM apiKey missing")
 	}
-	url := fmt.Sprintf("https://api.openweathermap.org/data/3.0/onecall?lat=%f&lon=%f&exclude=minutely,hourly,alerts,current&units=metric&appid=%s", lat, lon, c.apiKey)
+	url := fmt.Sprintf("https://api.openweathermap.org/data/3.0/onecall?lat=%f&lon=%f&exclude=current,minutely,hourly,alerts&appid=%s", lat, lon, c.apiKey)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	fmt.Println("Using OWM API Key:", c.apiKey)
+
 	if err != nil {
 		return 0, 0, err
 	}
