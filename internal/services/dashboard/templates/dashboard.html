@@ -10,15 +10,20 @@
     <h1>Dashboard Monitoraggio Terreno</h1>
 </header>
 
-<main class="grid">
-    <section class="card" id="levels">
-        <h2>Livelli Umidità Terreno</h2>
-        <ul>
-            {% for sensor in sensors %}
-            <li><strong>{{ sensor.id }}</strong>: {{ sensor.value }}% ({{ sensor.status }})</li>
-            {% endfor %}
-        </ul>
-    </section>
+<section class="card">
+    <h2>Livelli Umidità</h2>
+    <ul>
+        {% for s in sensors %}
+        <li>
+            <strong>{{ s.sensor_id }}</strong>
+            : {{ (s.moisture | default('—')) }}%
+            {% if s.time %} <span class="muted">({{ s.time }})</span>{% endif %}
+        </li>
+        {% else %}
+        <li>Nessun dato sensori disponibile.</li>
+        {% endfor %}
+    </ul>
+</section>
 
     <section class="card" id="analytics">
         <h2>Analytics</h2>

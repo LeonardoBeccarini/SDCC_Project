@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ngrok-config
+  namespace: rabbitmq
+data:
+  ngrok.yml: |
+    version: "2"
+    region: eu
+    log: stdout
+    tunnels:
+      mqtt:
+        proto: tcp
+        addr: rabbitmq.rabbitmq.svc.cluster.local:1883
+        # Se hai un "Reserved TCP Address" (consigliato prod), sbloccalo:
+        # remote_addr: 2.tcp.eu.ngrok.io:17003

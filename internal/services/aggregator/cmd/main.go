@@ -51,7 +51,7 @@ func main() {
 	clientID := env("MQTT_CLIENT_ID", "aggregator-"+strconv.FormatInt(time.Now().Unix(), 10))
 
 	// Questo nodo edge aggrega un solo field (es. field1 o field2)
-	topicsCSV := env("SENSOR_TOPICS", "sensor/data/field1/+")
+	topicsCSV := env("SENSOR_TOPICS", "sensor/data/field_1/+")
 	var topics []string
 	for _, t := range strings.Split(topicsCSV, ",") {
 		t = strings.TrimSpace(t)
@@ -72,8 +72,8 @@ func main() {
 		log.Fatalf("MQTT connect: %v", err)
 	}
 
-	// Publisher base, il servizio pubblicherà su sensor/aggregated/{field}/{sensor}
-	publisher := rabbitmq.NewPublisher(client, "sensor/aggregated", cfg.Exchange)
+	// Publisher base, il servizio pubblicherà su sensor/aggregated/{field}/{sensor} tramite flush()
+	publisher := rabbitmq.NewPublisher(client, "", cfg.Exchange)
 	consumer := rabbitmq.NewMultiConsumer(client, topics, cfg.Exchange, nil)
 
 	service := aggregator.NewDataAggregatorService(consumer, publisher, window)

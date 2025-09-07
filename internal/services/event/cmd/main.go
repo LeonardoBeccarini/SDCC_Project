@@ -25,7 +25,6 @@ func envStr(key, def string) string {
 	}
 	return def
 }
-
 func envInt(key string, def int) int {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -88,26 +87,30 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// === InfluxDB client and writer ===
-	opts := influxdb2.DefaultOptions().SetBatchSize(uint(cfg.BatchSize)).SetFlushInterval(uint(cfg.FlushInterval.Milliseconds()))
+	// === InfluxDB ===
+	opts := influxdb2.DefaultOptions().
+		SetBatchSize(uint(cfg.BatchSize)).
+		SetFlushInterval(uint(cfg.FlushInterval.Milliseconds()))
 	influx := influxdb2.NewClientWithOptions(cfg.InfluxURL, cfg.InfluxToken, opts)
 	defer influx.Close()
-
 	writeAPI := influx.WriteAPI(cfg.InfluxOrg, cfg.InfluxBucket)
-	var writer = event.NewWriter(writeAPI)
+	writer := event.NewWriter(writeAPI)
 
-	// === MQTT connection ===
+	// === MQTT ===
 	mqttClient, err := rabbitmq.NewRabbitMQConn(&cfg.Rabbit, ctx)
 	if err != nil {
 		log.Fatalf("mqtt connection error: %v", err)
 	}
 	defer rabbitmq.CloseRabbitMQConn(mqttClient)
 
-	// === HTTP server ===
+	// === HTTP ===
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", event.NewHealthHandler(mqttClient, influx, writer))
 	mux.Handle("/readyz", event.NewReadyHandler(mqttClient, influx, writer, 2*time.Second))
-	mux.Handle("/irrigations/recent", event.NewIrrigationsHandler(influx, cfg.InfluxOrg, cfg.InfluxBucket))
+
+	// Rotta che IL GATEWAY sta chiamando oggi:
+	// GET /events/irrigation/latest?limit=20[&minutes=1440]
+	mux.Handle("/events/irrigation/latest", event.NewIrrigationLatestHandler(influx, cfg.InfluxOrg, cfg.InfluxBucket))
 
 	hs := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
@@ -121,13 +124,12 @@ func main() {
 		}
 	}()
 
-	// === MQTT consumer (subscribe to all topics) ===
+	// === Consumer ===
 	h := event.NewMQTTHandler(func(evt event.CommonEvent) {
 		p := event.EventToPoint(evt)
 		writeAPI.WritePoint(p)
 		writer.MarkIngest(evt.EventType)
 	})
-
 	for _, topic := range cfg.Topics {
 		if strings.TrimSpace(topic) == "" {
 			continue
@@ -149,6 +151,6 @@ func main() {
 	defer shCancel()
 	_ = hs.Shutdown(shCtx)
 
-	// allow writer to flush
+	// consenti flush
 	time.Sleep(cfg.FlushInterval + 100*time.Millisecond)
 }

@@ -125,7 +125,7 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 	// meteo (ET0 & rain)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	eto, rain, err := c.wclient.GetDailyET0AndRain(ctx, sensorLatitude(sensor), sensorLongitude(sensor), time.Now().UTC())
+	eto, rain, err := c.wclient.GetDailyET0AndRain(ctx, sensor.Latitude, sensor.Longitude, time.Now().UTC())
 	if err != nil {
 		log.Printf("controller: weather error: %v (using defaults)", err)
 		eto, rain = 4.0, 0.0
@@ -140,13 +140,17 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 	}
 
 	// traduzione dose → minuti con flow/area
-	mmPerMin := flowMMPerMinute(sensor)
 	durationMin := 0
+	mmPerMin := sensor.MMPerMinute()
 	if doseMM > 0 && mmPerMin > 0 {
 		durationMin = int(math.Round(doseMM / mmPerMin))
 		if durationMin <= 0 {
+			// in teoria non dovrebbe accadere con mmPerMin>0, ma evitiamo 0
 			durationMin = 1
 		}
+	} else if doseMM > 0 && mmPerMin <= 0 {
+		log.Printf("controller: mmPerMin<=0 per %s/%s (flow=%.2f lpm, area=%.2f m2) → skip avvio irrigazione",
+			fieldID, sensor.ID, sensor.FlowLpm, sensor.AreaM2)
 	}
 
 	// invoca DeviceService se serve
@@ -223,32 +227,3 @@ func loadSensors(path string) (map[string]map[string]model.Sensor, error) {
 	}
 	return out, nil
 }
-
-// mm/min = Lpm / m^2 (1 L/m^2 = 1 mm). Se area o flow mancano/0 → fallback 1 mm/min.
-func flowMMPerMinute(s model.Sensor) float64 {
-	area := s.AreaM2
-	if area <= 0 {
-		area = 1 // fallback: 1 m^2
-	}
-	flow := s.FlowLpm // json:"flow_rate"
-	if flow <= 0 {
-		return 1.0
-	}
-	return flow / area
-}
-
-func sensorLatitude(s model.Sensor) float64 {
-	if s.Latitude != 0 {
-		return s.Latitude
-	}
-	return 0
-}
-
-func sensorLongitude(s model.Sensor) float64 {
-	if s.Longitude != 0 {
-		return s.Longitude
-	}
-	return 0
-}
-
-//TODO il servizio da errore con l'API del tempo:  controller: weather error: owm status 401 (using defaults), SISTEMAREEEE

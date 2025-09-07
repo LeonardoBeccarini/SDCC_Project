@@ -1,57 +1,125 @@
 package event
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 )
 
+// Payload esposta al gateway
 type Irrigation struct {
-	SensorID string `json:"sensor_id"`
-	Amount   int    `json:"amount"` // dose in mm (arrotondata)
-	Time     string `json:"time"`   // RFC3339
+	SensorID string  `json:"sensor_id,omitempty"`
+	Amount   float64 `json:"amount"` // mm (mappa da dose_mm)
+	Time     string  `json:"time"`   // RFC3339
 }
 
-func NewIrrigationsHandler(client influxdb2.Client, org, bucket string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		limit := 20
-		if s := r.URL.Query().Get("limit"); s != "" {
-			if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 200 {
-				limit = n
+type irrQueryParams struct {
+	Minutes   int
+	Limit     int
+	TimeoutMS int
+}
+
+func parseIrr(r *http.Request, defMin, defLim, defTOms int) irrQueryParams {
+	q := r.URL.Query()
+	get := func(k string, def, min, max int) int {
+		if v := strings.TrimSpace(q.Get(k)); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				if n < min {
+					return min
+				}
+				if max > 0 && n > max {
+					return max
+				}
+				return n
+			}
+		}
+		return def
+	}
+	return irrQueryParams{
+		Minutes:   get("minutes", defMin, 1, 7*24*60),
+		Limit:     get("limit", defLim, 1, 500),
+		TimeoutMS: get("timeout_ms", defTOms, 200, 5000),
+	}
+}
+
+func buildFlux(bucket string, minutes, limit int) string {
+	return fmt.Sprintf(`
+from(bucket: %q)
+  |> range(start: -%dm)
+  |> filter(fn: (r) => r._measurement == "system_event" and r.event_type == "irrigation.decision")
+  |> filter(fn: (r) => r._field == "dose_mm")
+  |> keep(columns: ["_time","_value","sensor_id"])
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n:%d)
+`, bucket, minutes, limit)
+}
+
+func runIrr(w http.ResponseWriter, r *http.Request, influx influxdb2.Client, org, bucket string, defMin, defLim int) {
+	p := parseIrr(r, defMin, defLim, 2000)
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(p.TimeoutMS)*time.Millisecond)
+	defer cancel()
+
+	api := influx.QueryAPI(org)
+	res, err := api.Query(ctx, buildFlux(bucket, p.Minutes, p.Limit))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Error", "influx-query-error")
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+	defer res.Close()
+
+	out := make([]Irrigation, 0, p.Limit)
+	for res.Next() {
+		rec := res.Record()
+
+		// dose_mm -> amount
+		var amount float64
+		switch v := rec.Value().(type) {
+		case float64:
+			amount = v
+		case int64:
+			amount = float64(v)
+		case int:
+			amount = float64(v)
+		case string:
+			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+				amount = f
 			}
 		}
 
-		q := `
-from(bucket:"` + bucket + `")
-|> range(start:-7d)
-|> filter(fn:(r)=> r._measurement=="system_event" and r.event_type=="irrigation.decision" and r._field=="dose_mm")
-|> keep(columns:["sensor_id","_time","_value"])
-|> sort(columns:["_time"], desc:true)
-|> limit(n:` + strconv.Itoa(limit) + `)
-`
-		api := client.QueryAPI(org)
-		res, err := api.Query(r.Context(), q)
-		if err != nil {
-			http.Error(w, "query error", http.StatusBadGateway)
-			return
+		var sensorID string
+		if v := rec.ValueByKey("sensor_id"); v != nil {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				sensorID = s
+			}
 		}
-		defer res.Close()
 
-		out := make([]Irrigation, 0, limit)
-		for res.Next() {
-			sid, _ := res.Record().ValueByKey("sensor_id").(string)
-			val, _ := res.Record().Value().(float64)
-			ts := res.Record().Time()
-			out = append(out, Irrigation{
-				SensorID: sid,
-				Amount:   int(val + 0.5), // arrotonda
-				Time:     ts.UTC().Format(time.RFC3339),
-			})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(out)
+		out = append(out, Irrigation{
+			SensorID: sensorID,
+			Amount:   amount,
+			Time:     rec.Time().UTC().Format(time.RFC3339),
+		})
+	}
+	if res.Err() != nil {
+		w.Header().Set("X-Error", "influx-iter-error")
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// === HANDLER PUBBLICO UNIFICATO ===
+// GET /events/irrigation/latest?limit=20[&minutes=1440]
+func NewIrrigationLatestHandler(influx influxdb2.Client, org, bucket string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		runIrr(w, r, influx, org, bucket, 1440, 20)
 	})
 }

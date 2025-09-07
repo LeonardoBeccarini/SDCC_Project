@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
+	"math"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -16,101 +17,172 @@ import (
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 )
 
-// Configurazione Influx
 type InfluxConfig struct {
-	InfluxURL       string
-	InfluxToken     string
-	InfluxOrg       string
-	InfluxBucket    string
-	MeasurementMode string // "per-sensor" | "single"
-	MeasurementName string // se "single", es. "soil_moisture"
+	InfluxURL    string
+	InfluxToken  string
+	InfluxOrg    string
+	InfluxBucket string
+	Measurement  string // default: "soil_moisture"
 }
 
 type Service struct {
-	consumer        rabbitmq.IConsumer[model.SensorData]
-	writeAPI        api.WriteAPIBlocking
-	measurementMode string
-	measurementName string
+	consumer    rabbitmq.IConsumer[model.SensorData]
+	writeAPI    api.WriteAPIBlocking
+	queryAPI    api.QueryAPI
+	cfg         InfluxConfig
+	measurement string
+
+	mu     sync.RWMutex
+	latest map[string]model.SensorData // cache: key = field_id/sensor_id
 }
 
-func NewService(consumer rabbitmq.IConsumer[model.SensorData], cfg InfluxConfig) (*Service, error) {
-	if cfg.InfluxURL == "" || cfg.InfluxToken == "" || cfg.InfluxOrg == "" || cfg.InfluxBucket == "" {
-		return nil, fmt.Errorf("influx config incomplete")
+// Costruttore: passa il consumer MQTT e il client Influx già creato nel main.
+func NewService(consumer rabbitmq.IConsumer[model.SensorData], client influxdb2.Client, cfg InfluxConfig) (*Service, error) {
+	if cfg.Measurement == "" {
+		cfg.Measurement = "soil_moisture"
+	}
+	w := client.WriteAPIBlocking(cfg.InfluxOrg, cfg.InfluxBucket)
+	q := client.QueryAPI(cfg.InfluxOrg)
+	s := &Service{
+		consumer:    consumer,
+		writeAPI:    w,
+		queryAPI:    q,
+		cfg:         cfg,
+		measurement: cfg.Measurement,
+		latest:      make(map[string]model.SensorData),
+	}
+	// Il service gestisce la deserializzazione e la scrittura su Influx
+	consumer.SetHandler(s.handleMessage)
+	return s, nil
+}
+
+func keyOf(fieldID, sensorID string) string { return fieldID + "/" + sensorID }
+
+// Handler dei messaggi MQTT (aggregati) -> scrive su Influx + aggiorna cache
+func (s *Service) handleMessage(_ string, msg mqtt.Message) error {
+	var data model.SensorData
+	if err := json.Unmarshal(msg.Payload(), &data); err != nil {
+		log.Printf("persistence: bad payload: %v", err)
+		return nil // non nack
+	}
+	if data.Timestamp.IsZero() {
+		data.Timestamp = time.Now().UTC()
 	}
 
-	client := influxdb2.NewClient(cfg.InfluxURL, cfg.InfluxToken)
-	writeAPI := client.WriteAPIBlocking(cfg.InfluxOrg, cfg.InfluxBucket)
+	// write Influx
+	p := influxdb2.NewPoint(
+		s.measurement,
+		map[string]string{
+			"field_id":   safeTag(data.FieldID),
+			"sensor_id":  safeTag(data.SensorID),
+			"aggregated": boolToStr(data.Aggregated),
+		},
+		map[string]interface{}{
+			"moisture": int64(data.Moisture),
+		},
+		data.Timestamp,
+	)
+	if err := s.writeAPI.WritePoint(context.Background(), p); err != nil {
+		log.Printf("persistence: write influx: %v", err)
+	}
 
-	return &Service{
-		consumer:        consumer,
-		writeAPI:        writeAPI,
-		measurementMode: cfg.MeasurementMode,
-		measurementName: cfg.MeasurementName,
-	}, nil
+	// cache
+	s.mu.Lock()
+	s.latest[keyOf(data.FieldID, data.SensorID)] = data
+	s.mu.Unlock()
+	return nil
 }
 
+// Start: avvia il consumo dei messaggi finché il contesto non viene cancellato
 func (s *Service) Start(ctx context.Context) {
-	// Handler invocato dal consumer per ogni messaggio MQTT
-	s.consumer.SetHandler(func(topic string, msg mqtt.Message) error {
-		var m model.SensorData
-		if err := json.Unmarshal(msg.Payload(), &m); err != nil {
-			log.Printf("persistence: invalid JSON on %s: %v", topic, err)
-			return nil // non bloccare lo stream
-		}
-
-		// Scegli il measurement name
-		measurement := s.measurementName
-		if s.measurementMode == "per-sensor" {
-			if measurement == "" {
-				measurement = "measurement"
-			}
-			measurement = measurement + "_" + m.SensorID // es. soil_moisture_<sensor>
-		}
-		measurement = sanitizeMeasurement(measurement)
-
-		// Tag & Fields
-		t := m.Timestamp
-		if t.IsZero() {
-			t = time.Now()
-		}
-
-		tags := map[string]string{
-			"field_id":  m.FieldID,
-			"sensor_id": m.SensorID,
-		}
-		fields := map[string]interface{}{
-			"moisture":   m.Moisture,
-			"aggregated": m.Aggregated,
-		}
-
-		// ✅ CORRETTO: usa NewPoint (niente struct literal con Time/Name/Tags/Fields)
-		point := influxdb2.NewPoint(measurement, tags, fields, t)
-
-		if err := s.writeAPI.WritePoint(ctx, point); err != nil {
-			log.Printf("persistence: write error: %v", err)
-			return err
-		}
-		log.Printf("persistence: wrote %s field=%s sensor=%s moisture=%d",
-			measurement, m.FieldID, m.SensorID, m.Moisture)
-		return nil
-	})
-
-	// Avvia il loop di consumo (blocca finché il contesto non chiude)
-	s.consumer.ConsumeMessage(ctx)
+	go s.consumer.ConsumeMessage(ctx)
+	<-ctx.Done()
 }
 
-func sanitizeMeasurement(s string) string {
-	var b strings.Builder
+// Query: ultimi valori (aggregated=true) da Influx per ciascun sensore
+func (s *Service) QueryLatestFromInflux(ctx context.Context, minutes int) ([]model.SensorData, error) {
+	if minutes <= 0 {
+		minutes = 60 * 24
+	}
+	flux := fmt.Sprintf(`from(bucket: "%s")
+  |> range(start: -%dm)
+  |> filter(fn: (r) => r._measurement == "%s")
+  |> filter(fn: (r) => r._field == "moisture")
+  |> filter(fn: (r) => r.aggregated == "true")
+  |> group(columns: ["field_id","sensor_id"])
+  |> last()
+  |> keep(columns: ["_time","_value","field_id","sensor_id"])`,
+		s.cfg.InfluxBucket, minutes, s.measurement)
+
+	res, err := s.queryAPI.Query(ctx, flux)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+
+	out := make([]model.SensorData, 0, 64)
+	for res.Next() {
+		rec := res.Record()
+		var fid, sid string
+		if v, ok := rec.ValueByKey("field_id").(string); ok {
+			fid = v
+		}
+		if v, ok := rec.ValueByKey("sensor_id").(string); ok {
+			sid = v
+		}
+		var moisture int
+		switch v := rec.Value().(type) {
+		case float64:
+			moisture = int(math.Round(v))
+		case int64:
+			moisture = int(v)
+		default:
+			moisture = 0
+		}
+		out = append(out, model.SensorData{
+			FieldID:    fid,
+			SensorID:   sid,
+			Moisture:   moisture,
+			Aggregated: true,
+			Timestamp:  rec.Time().UTC(),
+		})
+	}
+	if res.Err() != nil {
+		return nil, res.Err()
+	}
+	return out, nil
+}
+
+// Cache read (fallback)
+func (s *Service) LatestCache() []model.SensorData {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.SensorData, 0, len(s.latest))
+	for _, v := range s.latest {
+		out = append(out, v)
+	}
+	return out
+}
+
+func boolToStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+func safeTag(s string) string {
+	out := make([]rune, 0, len(s))
 	for _, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z',
 			r >= 'A' && r <= 'Z',
 			r >= '0' && r <= '9',
 			r == '_', r == ':', r == '-':
-			b.WriteRune(r)
+			out = append(out, r)
 		default:
-			b.WriteByte('_')
+			out = append(out, '_')
 		}
 	}
-	return b.String()
+	return string(out)
 }

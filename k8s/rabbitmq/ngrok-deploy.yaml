@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ngrok-mqtt
+  namespace: rabbitmq
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ngrok-mqtt } }
+  template:
+    metadata: { labels: { app: ngrok-mqtt } }
+    spec:
+      containers:
+        - name: ngrok
+          image: ngrok/ngrok:latest
+          # usa config file (crea il tunnel "mqtt")
+          args: ["start","--all","--config","/etc/ngrok/ngrok.yml"]
+          env:
+            - name: NGROK_AUTHTOKEN
+              valueFrom: { secretKeyRef: { name: ngrok-auth, key: token } }
+          volumeMounts:
+            - name: cfg
+              mountPath: /etc/ngrok
+          livenessProbe:
+            httpGet: { path: /status, port: 4040 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /status, port: 4040 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          ports:
+            - containerPort: 4040  # API locale ngrok (debug)
+      volumes:
+        - name: cfg
+          configMap: { name: ngrok-config, items: [{key: ngrok.yml, path: ngrok.yml}] }

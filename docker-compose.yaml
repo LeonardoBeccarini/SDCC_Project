@@ -2,7 +2,7 @@ services:
   gateway:
     build:
       context: .                                   # root (serve per il go.mod)
-      dockerfile: internal/services/gateway/cmd/Dockerfile
+      dockerfile: internal/services/gateway/Dockerfile
     image: sdcc/gateway:local
     ports: ["5008:5009"]
 

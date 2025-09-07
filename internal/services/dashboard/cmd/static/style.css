@@ -1,8 +1,0 @@
-:root{font-family:system-ui,Arial,sans-serif}
-body{margin:0;background:#f6f7fb;color:#222}
-header{background:#121212;color:#fff;padding:16px 24px}
-main.grid{display:grid;gap:16px;padding:16px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
-.card{background:#fff;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,.08);padding:16px}
-.card.fullwidth{grid-column:1 / -1}
-h1,h2{margin:0 0 12px}
-ul{margin:0;padding-left:20px}

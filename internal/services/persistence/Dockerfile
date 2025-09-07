@@ -21,4 +21,7 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /out/persistence /app/persistence
 
+# Porta HTTP usata dal gateway
+EXPOSE 8080
+
 ENTRYPOINT ["/app/persistence"]

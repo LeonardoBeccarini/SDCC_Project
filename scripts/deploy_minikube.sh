@@ -4,9 +4,9 @@ set -euo pipefail
 # ========= Config =========
 PROFILE="${PROFILE:-sdcc-cluster}"
 K8S_VERSION="${K8S_VERSION:-v1.30.5}"
-NODES="${NODES:-5}"   # 1 control-plane + NODES-1 workers
+NODES="${NODES:-6}"   # 1 control-plane + 5 workers
 CPUS="${CPUS:-4}"
-MEMORY="${MEMORY:-3000}"
+MEMORY="${MEMORY:-2200}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 K8S_DIR="${K8S_DIR:-$ROOT_DIR/k8s}"
@@ -19,32 +19,28 @@ command -v minikube >/dev/null || { echo "minikube not found"; exit 1; }
 command -v kubectl >/dev/null || { echo "kubectl not found"; exit 1; }
 command -v docker  >/dev/null || { echo "docker not found"; exit 1; }
 
-# ========= Start minikube =========    QUESTA QUI LASCIALA COME È
+# ========= Start minikube =========
 if ! minikube -p "$PROFILE" status >/dev/null 2>&1; then
   echo "==> Starting minikube profile '$PROFILE' with $NODES nodes..."
-  minikube start -p "$PROFILE" \
-    --kubernetes-version="$K8S_VERSION" \
-    --nodes="$NODES" \
-    --cpus="$CPUS" \
-    --memory="$MEMORY" \
-    --container-runtime=containerd \
-    --extra-config=kubelet.cgroup-driver=systemd \
-    --delete-on-failure
+   minikube start -p "$PROFILE" --kubernetes-version="$K8S_VERSION" --nodes="$NODES" --cpus="$CPUS" --memory="$MEMORY"
 else
   echo "==> Minikube profile '$PROFILE' already running"
 fi
 
 # ========= Label nodes (per i nodeSelector dei manifest) =========
 echo "==> Labeling nodes"
-nodes=($(kubectl get nodes -o name | awk -F/ '{print $2}'))
-if [ "${#nodes[@]}" -lt 3 ]; then
-  echo "Need at least 3 nodes"; exit 1;
-fi
+kubectl wait --for=condition=Ready node --all --timeout=120s >/dev/null
+
+mapfile -t nodes < <(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' \
+  --sort-by='.metadata.name' -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+
+(( ${#nodes[@]} == 5 )) || { echo "Servono esattamente 5 worker (trovati ${#nodes[@]})."; exit 1; }
+
 kubectl label node "${nodes[0]}" role=rabbitmq --overwrite
 kubectl label node "${nodes[1]}" role=sensors  --overwrite
 kubectl label node "${nodes[2]}" role=fog      --overwrite
-if [ "${#nodes[@]}" -ge 4 ]; then kubectl label node "${nodes[3]}" role=edge1 --overwrite; fi
-if [ "${#nodes[@]}" -ge 5 ]; then kubectl label node "${nodes[4]}" role=edge2 --overwrite; fi
+kubectl label node "${nodes[3]}" role=edge1 --overwrite;
+kubectl label node "${nodes[4]}" role=edge2 --overwrite;
 
 # ========= Build images (host docker) + load into all nodes =========
 echo "==> Building images locally"
@@ -118,7 +114,7 @@ fi
 echo "URL estratto: $URL"
 
 # Aggiornamento della configurazione su Elastic Beanstalk
-aws elasticbeanstalk update-environment --environment-name sdcc-gateway-env --option-settings "Namespace=aws:elasticbeanstalk:application:environment,OptionName=EVENT_URL,Value=$URL"
+#aws elasticbeanstalk update-environment --environment-name sdcc-gateway-env --option-settings "Namespace=aws:elasticbeanstalk:application:environment,OptionName=EVENT_URL,Value=$URL"
 # Messaggio di conferma
 echo "Configurazione aggiornata su AWS Elastic Beanstalk con l'URL: $URL."
 

@@ -94,6 +94,12 @@ func decodeStateChange(topic string, b []byte) (CommonEvent, error) {
 		return CommonEvent{}, err
 	}
 	status, _ := obj["status"].(string)
+	// Fallback per payload che usano "new_state" invece di "status"
+	if strings.TrimSpace(status) == "" {
+		if ns, ok := obj["new_state"].(string); ok && strings.TrimSpace(ns) != "" {
+			status = ns
+		}
+	}
 	if strings.TrimSpace(status) == "" {
 		return CommonEvent{}, errors.New("missing status")
 	}
