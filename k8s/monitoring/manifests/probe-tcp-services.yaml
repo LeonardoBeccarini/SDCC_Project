@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: tcp-core-services
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  jobName: blackbox-tcp
+  prober:
+    url: http://blackbox-prometheus-blackbox-exporter.monitoring.svc.cluster.local:9115
+  module: tcp_connect
+  targets:
+    staticConfig:
+      static:
+        - rabbitmq.fog.svc.cluster.local:5672
+        - mqtt.fog.svc.cluster.local:1883

@@ -8,6 +8,11 @@ metadata:
 spec:
   serviceName: rabbitmq-headless
   replicas: 1
+  podManagementPolicy: OrderedReady
+  revisionHistoryLimit: 10
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
   selector:
     matchLabels:
       app: rabbitmq
@@ -16,20 +21,12 @@ spec:
       labels:
         app: rabbitmq
     spec:
-      # facoltativo: se usi lo script che etichetta i nodi
       nodeSelector:
         role: rabbitmq
       containers:
         - name: rabbitmq
           image: rabbitmq:3.13-management
           imagePullPolicy: IfNotPresent
-          ports:
-            - name: amqp
-              containerPort: 5672
-            - name: mgmt
-              containerPort: 15672
-            - name: mqtt
-              containerPort: 1883
           env:
             - name: RABBITMQ_DEFAULT_USER
               valueFrom:
@@ -41,12 +38,25 @@ spec:
                 secretKeyRef:
                   name: rabbitmq-default-userpass
                   key: RABBITMQ_DEFAULT_PASS
-          volumeMounts:
-            - name: rabbitmq-config
-              mountPath: /etc/rabbitmq
-            - name: data
-              mountPath: /var/lib/rabbitmq
-          # Probe semplificate (evitano auth alla mgmt API)
+            # 👉 indica a RabbitMQ dove si trova il file dei plugin dentro la dir montata
+            - name: RABBITMQ_ENABLED_PLUGINS_FILE
+              value: /etc/rabbitmq/enabled_plugins/enabled_plugins
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: mgmt
+              containerPort: 15672
+            - name: mqtt
+              containerPort: 1883
+            - name: metrics   # 👉 Prometheus (rabbitmq_prometheus)
+              containerPort: 15692
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
           livenessProbe:
             tcpSocket:
               port: 5672
@@ -57,17 +67,26 @@ spec:
               port: 5672
             initialDelaySeconds: 10
             periodSeconds: 10
-          resources:
-            requests:
-              cpu: "200m"
-              memory: "256Mi"
-            limits:
-              cpu: "1"
-              memory: "1Gi"
+          volumeMounts:
+            - name: rabbitmq-config
+              mountPath: /etc/rabbitmq
+            - name: data
+              mountPath: /var/lib/rabbitmq
+            # 👉 montiamo la ConfigMap come DIRECTORY (niente subPath!)
+            - name: enabled-plugins
+              mountPath: /etc/rabbitmq/enabled_plugins
+              readOnly: true
       volumes:
         - name: rabbitmq-config
           configMap:
             name: rabbitmq-config
+        # 👉 volume che porta dentro il file enabled_plugins
+        - name: enabled-plugins
+          configMap:
+            name: rabbitmq-enabled-plugins    # DA MODIFICARE QUESTO PER NON FARLO BLOCCARE PIÙ
+            items:
+              - key: enabled_plugins
+                path: enabled_plugins
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -76,3 +95,4 @@ spec:
         resources:
           requests:
             storage: 5Gi
+

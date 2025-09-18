@@ -63,6 +63,7 @@ done
 
 # ========= Apply manifests =========
 kubectl apply -f "$K8S_DIR/namespaces.yaml"
+kubectl apply -n rabbitmq -f k8s/monitoring/manifests/rabbitmq-enabled-plugins-cm.yaml
 
 # RabbitMQ (singola replica)
 kubectl apply -f "$K8S_DIR/rabbitmq/config-and-secrets.yaml"
@@ -73,6 +74,7 @@ kubectl apply -f "$K8S_DIR/rabbitmq/statefulset.yaml"
 
 echo "==> Waiting for RabbitMQ (single replica) ..."
 kubectl -n rabbitmq rollout status statefulset/rabbitmq -w
+
 
 # Config comuni + servizi
 kubectl apply -f "$K8S_DIR/config"
@@ -101,6 +103,14 @@ echo "RabbitMQ MQTT  : $MINIKUBE_IP:31883  (user: mqtt_user, pass: mqtt_pwd)"
 echo "RabbitMQ AMQP  : $MINIKUBE_IP:30672"
 echo "RabbitMQ Mgmt  : http://$MINIKUBE_IP:31672"
 echo ""
+
+
+kubectl apply -f ./k8s/rabbitmq/ngrok-secret.yaml
+kubectl apply -f ./k8s/rabbitmq/ngrok-config.yaml
+kubectl apply -f ./k8s/rabbitmq/ngrok-deploy.yaml
+
+# per prendere indirizzo e porta esposte di rabbitmq
+kubectl -n rabbitmq logs deploy/ngrok-mqtt | grep -Eo 'tcp://[^ ]+' | tail -n1
 # Estrazione automatica dell'URL dal log
 URL=$(kubectl -n fog logs deploy/event-quick-tunnel | grep -m1 -o 'https://[^ ]*trycloudflare.com')
 
@@ -123,3 +133,4 @@ echo "Done."
 #----------- PER ESEGUIRLO -----------
 #chmod +x scripts/deploy_minikube.sh
 #scripts/deploy_minikube.sh
+#minikube delete --all --purge

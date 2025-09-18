@@ -25,8 +25,8 @@ def fetch_data():
     if isinstance(payload, dict):
         return payload
 
-    if isinstance(payload, list):
-        # Alcuni backend potrebbero restituire direttamente una lista di sensori
+    if "irrigations" in payload:
+        payload["irrigations"] = sorted(payload["irrigations"], key=lambda x: x['time'])
         return {"sensors": payload}
 
     app.logger.warning("Unexpected payload type: %r", type(payload))

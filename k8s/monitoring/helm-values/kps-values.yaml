@@ -1,0 +1,26 @@
+grafana:
+  adminUser: admin
+  adminPassword: sdcc
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL
+
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    podMonitorNamespaceSelector: {}
+    probeNamespaceSelector: {}
+    # storageSpec:            # (opzionale: persistenza)
+    #   volumeClaimTemplate:
+    #     spec:
+    #       resources:
+    #         requests:
+    #           storage: 20Gi
