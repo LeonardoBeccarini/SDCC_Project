@@ -66,12 +66,17 @@ func main() {
 
 	// Trova il sensore richiesto
 	var sensor *entities.Sensor
-	for _, sensors := range config {
-		for _, s := range sensors {
-			if s.ID == sensorID {
+	for _, arr := range config {
+		for i := range arr {
+			if arr[i].ID == sensorID {
+				// model.Sensor è un alias di entities.Sensor, quindi il cast è sicuro
+				s := entities.Sensor(arr[i])
 				sensor = &s
 				break
 			}
+		}
+		if sensor != nil {
+			break
 		}
 	}
 	if sensor == nil {
@@ -108,8 +113,10 @@ func main() {
 	stateTopic := replacer.Replace(topicTmpl)
 	consumer := rabbitmq.NewConsumer(client, stateTopic, cfg.Exchange, nil)
 
-	// Generatore: SOLO soilMoisture
+	// Generatore: seed UNA SOLA VOLTA da SoilGrids all'avvio; poi gestione interna
 	gen := sensor_simulator.NewDataGenerator(0.001)
+	// Seed iniziale da SoilGrids solo all'avvio
+	gen.SeedFromSoilGrids(ctx, (*model.Sensor)(sensor))
 
 	service := sensor_simulator.NewSensorSimulator(consumer, publisher, gen, sensor)
 	log.Printf("Sensor Simulator [%s] started for field %s, pub=%s, sub=%s", sensor.ID, sensor.FieldID, pubTopic, stateTopic)

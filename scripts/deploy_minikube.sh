@@ -44,11 +44,11 @@ kubectl label node "${nodes[4]}" role=edge2 --overwrite;
 
 # ========= Build images (host docker) + load into all nodes =========
 echo "==> Building images locally"
-docker build -t sdcc/sensor-simulator:local        -f "$ROOT_DIR/internal/sensor-simulator/Dockerfile" "$ROOT_DIR"
-docker build -t sdcc/aggregator:local              -f "$ROOT_DIR/internal/services/aggregator/Dockerfile" "$ROOT_DIR"
-docker build -t sdcc/device-service:local          -f "$ROOT_DIR/internal/services/device/Dockerfile" "$ROOT_DIR"
-docker build -t sdcc/irrigation-controller:local   -f "$ROOT_DIR/internal/services/irrigation-controller/Dockerfile" "$ROOT_DIR"
-docker build -t sdcc/event-service:local  -f "$ROOT_DIR/internal/services/event/Dockerfile" "$ROOT_DIR"
+docker build --no-cache -t sdcc/sensor-simulator:local        -f "$ROOT_DIR/internal/sensor-simulator/Dockerfile" "$ROOT_DIR"
+docker build --no-cache -t sdcc/aggregator:local              -f "$ROOT_DIR/internal/services/aggregator/Dockerfile" "$ROOT_DIR"
+docker build --no-cache -t sdcc/device-service:local          -f "$ROOT_DIR/internal/services/device/Dockerfile" "$ROOT_DIR"
+docker build --no-cache -t sdcc/irrigation-controller:local   -f "$ROOT_DIR/internal/services/irrigation-controller/Dockerfile" "$ROOT_DIR"
+docker build --no-cache -t sdcc/event-service:local  -f "$ROOT_DIR/internal/services/event/Dockerfile" "$ROOT_DIR"
 
 echo "==> Loading images into all minikube nodes"
 for img in \
@@ -124,7 +124,7 @@ fi
 echo "URL estratto: $URL"
 
 # Aggiornamento della configurazione su Elastic Beanstalk
-#aws elasticbeanstalk update-environment --environment-name sdcc-gateway-env --option-settings "Namespace=aws:elasticbeanstalk:application:environment,OptionName=EVENT_URL,Value=$URL"
+#aws elasticbeanstalk update-en vironment --environment-name sdcc-gateway-env --option-settings "Namespace=aws:elasticbeanstalk:application:environment,OptionName=EVENT_URL,Value=$URL"
 # Messaggio di conferma
 echo "Configurazione aggiornata su AWS Elastic Beanstalk con l'URL: $URL."
 
@@ -133,4 +133,4 @@ echo "Done."
 #----------- PER ESEGUIRLO -----------
 #chmod +x scripts/deploy_minikube.sh
 #scripts/deploy_minikube.sh
-#minikube delete --all --purge
+#minikube delete --all --purge per eliminare tutti i cluster su minikube

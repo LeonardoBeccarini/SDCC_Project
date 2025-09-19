@@ -124,6 +124,11 @@ func decodeStateChange(topic string, b []byte) (CommonEvent, error) {
 			fields["duration_s"] = int64(d / time.Second)
 		}
 	}
+	if v, ok := obj["duration"].(float64); ok {
+		// Go time.Duration marshalla come intero di nanosecondi; in JSON lo vedi come float64
+		fields["duration_s"] = int64(v) / int64(time.Second)
+	}
+
 	if v, ok := obj["reason"].(string); ok && v != "" {
 		fields["reason"] = v
 	}

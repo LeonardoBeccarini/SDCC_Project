@@ -10,6 +10,25 @@ spec:
     metadata:
       labels: { app: irrigation-controller }
     spec:
+      initContainers:
+        - name: netem
+          image: alpine:3.20
+          securityContext:
+            capabilities:
+              add: [ "NET_ADMIN" ]
+          env:
+            - name: DELAY
+              value: "20ms"
+            - name: JITTER
+              value: "6ms"
+          command: [ "sh","-c" ]
+          args:
+            - >
+              apk add --no-cache iproute2 &&
+              tc qdisc del dev eth0 root 2>/dev/null || true &&
+              tc qdisc add dev eth0 root netem delay ${DELAY} ${JITTER} distribution normal &&
+              tc qdisc show dev eth0
+
       nodeSelector: { role: fog }
       containers:
         - name: irrigation-controller
@@ -24,7 +43,7 @@ spec:
             - { name: IRRIGATION_DECISION_TOPIC_TMPL, value: "event/irrigationDecision/{field}/{sensor}" }
             - { name: DEVICE_GRPC_ADDR_MAP, value: "field_1=device-svc-field1.edge.svc.cluster.local:50051,field_2=device-svc-field2.edge.svc.cluster.local:50051" }
             - { name: SENSORS_CONFIG_PATH, value: "/app/config/sensors-config.json" }
-            - { name: MOISTURE_THRESHOLD_PCT, value: "25" }
+            - { name: MOISTURE_THRESHOLD_PCT, value: "35" }
             - name: OWM_API_KEY
               valueFrom:
                 secretKeyRef: { name: weather-owm, key: OWM_API_KEY }

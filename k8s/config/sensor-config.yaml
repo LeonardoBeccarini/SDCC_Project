@@ -8,12 +8,12 @@ data:
   sensors-config.json: |
     {
       "field_1": [
-        { "field_id":"field_1", "id": "sensor_1", "latitude": 12.37007,  "longitude": 41.51109,  "max_depth": 30, "flow_rate": 10 },
-        { "field_id":"field_1", "id": "sensor_2", "latitude": 12.616869, "longitude": 41.853104, "max_depth": 30, "flow_rate": 10 }
+        { "field_id":"field_1", "id":"sensor_1", "latitude":41.51109, "longitude":12.37007,  "max_depth":30, "flow_rate":10, "area_m2":50 },
+        { "field_id":"field_1", "id":"sensor_2", "latitude":41.853104,"longitude":12.616869, "max_depth":30, "flow_rate":10, "area_m2":50 }
       ],
       "field_2": [
-        { "field_id":"field_2", "id": "sensor_3", "latitude": 12.614386, "longitude": 41.853818, "max_depth": 30, "flow_rate": 10 },
-        { "field_id":"field_2", "id": "sensor_4", "latitude": 12.614975, "longitude": 41.852748, "max_depth": 30, "flow_rate": 10 }
+        { "field_id":"field_2", "id":"sensor_3", "latitude":41.853818,"longitude":12.613386, "max_depth":30, "flow_rate":10, "area_m2":50 },
+        { "field_id":"field_2", "id":"sensor_4", "latitude":41.852748,"longitude":12.614975, "max_depth":30, "flow_rate":10, "area_m2":50 }
       ]
     }
 ---
@@ -26,12 +26,12 @@ data:
   sensors-config.json: |
     {
       "field_1": [
-        { "field_id":"field_1", "id": "sensor_1", "latitude": 12.37007,  "longitude": 41.51109,  "max_depth": 30, "flow_rate": 10 },
-        { "field_id":"field_1", "id": "sensor_2", "latitude": 12.616869, "longitude": 41.853104, "max_depth": 30, "flow_rate": 10 }
+        { "field_id":"field_1", "id":"sensor_1", "latitude":41.51109, "longitude":12.37007,  "max_depth":30, "flow_rate":10, "area_m2":50 },
+        { "field_id":"field_1", "id":"sensor_2", "latitude":41.853104,"longitude":12.616869, "max_depth":30, "flow_rate":10, "area_m2":50 }
       ],
       "field_2": [
-        { "field_id":"field_2", "id": "sensor_3", "latitude": 12.614386, "longitude": 41.853818, "max_depth": 30, "flow_rate": 10 },
-        { "field_id":"field_2", "id": "sensor_4", "latitude": 12.614975, "longitude": 41.852748, "max_depth": 30, "flow_rate": 10 }
+        { "field_id":"field_2", "id":"sensor_3", "latitude":41.853818,"longitude":12.613386, "max_depth":30, "flow_rate":10, "area_m2":50 },
+        { "field_id":"field_2", "id":"sensor_4", "latitude":41.852748,"longitude":12.614975, "max_depth":30, "flow_rate":10, "area_m2":50 }
       ]
     }
 ---
@@ -44,11 +44,11 @@ data:
   sensors-config.json: |
     {
       "field_1": [
-        { "field_id":"field_1", "id": "sensor_1", "latitude": 12.37007,  "longitude": 41.51109,  "max_depth": 30, "flow_rate": 10 },
-        { "field_id":"field_1", "id": "sensor_2", "latitude": 12.616869, "longitude": 41.853104, "max_depth": 30, "flow_rate": 10 }
+        { "field_id":"field_1", "id":"sensor_1", "latitude":41.51109, "longitude":12.37007,  "max_depth":30, "flow_rate":10, "area_m2":50 },
+        { "field_id":"field_1", "id":"sensor_2", "latitude":41.853104,"longitude":12.616869, "max_depth":30, "flow_rate":10, "area_m2":50 }
       ],
       "field_2": [
-        { "field_id":"field_2", "id": "sensor_3", "latitude": 12.614386, "longitude": 41.853818, "max_depth": 30, "flow_rate": 10 },
-        { "field_id":"field_2", "id": "sensor_4", "latitude": 12.614975, "longitude": 41.852748, "max_depth": 30, "flow_rate": 10 }
+        { "field_id":"field_2", "id":"sensor_3", "latitude":41.853818,"longitude":12.613386, "max_depth":30, "flow_rate":10, "area_m2":50 },
+        { "field_id":"field_2", "id":"sensor_4", "latitude":41.852748,"longitude":12.614975, "max_depth":30, "flow_rate":10, "area_m2":50 }
       ]
     }

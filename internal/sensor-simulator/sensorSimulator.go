@@ -1,4 +1,3 @@
-// sensor_simulator.go
 package sensor_simulator
 
 import (
@@ -61,6 +60,9 @@ func (s *SensorSimulator) Start(
 				log.Printf("data gen error: %v", err)
 				continue
 			}
+			//debug
+			log.Printf("sensor: pub raw field=%s sensor=%s moisture=%d%%",
+				sd.FieldID, sd.SensorID, sd.Moisture)
 			payload, _ := json.Marshal(sd)
 			if err := s.publisher.PublishMessage(string(payload)); err != nil {
 				log.Printf("publish error: %v", err)
@@ -105,12 +107,18 @@ func (s *SensorSimulator) applyTimedState(evt model.StateChangeEvent) {
 	}
 
 	// schedule a revert
-	s.timer = time.AfterFunc(evt.Duration, func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.sensor.State = prev
-		fmt.Printf("Sensor %s ↺ %s\n", s.sensor.ID, prev)
+	if s.timer != nil {
+		s.timer.Stop()
 		s.timer = nil
-		// TODO chi è responsabile di fare una query ai sensori per verificarne lo stato?
-	})
+	}
+
+	if evt.Duration > 0 {
+		s.timer = time.AfterFunc(evt.Duration, func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.sensor.State = prev
+			fmt.Printf("Sensor %s ↺ %s\n", s.sensor.ID, prev)
+			s.timer = nil
+		})
+	}
 }

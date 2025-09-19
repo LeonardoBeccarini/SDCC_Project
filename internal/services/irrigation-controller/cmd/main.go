@@ -44,7 +44,7 @@ func main() {
 	exchange := env("RABBITMQ_EXCHANGE", "sensor_data")
 	clientID := fmt.Sprintf("IrrigationController-%s", env("HOSTNAME", "local"))
 
-	cfg := &rabbitmq.RabbitMQConfig{Host: host, Port: port, User: user, Password: pass, ClientID: clientID, Exchange: exchange}
+	cfg := &rabbitmq.RabbitMQConfig{Host: host, Port: port, User: user, Password: pass, ClientID: clientID, Exchange: exchange, Kind: "topic"}
 	mqClient, err := rabbitmq.NewRabbitMQConn(cfg, ctx)
 	if err != nil {
 		log.Fatalf("MQTT connect failed: %v", err)
@@ -54,7 +54,7 @@ func main() {
 	decisionTopicTmpl := env("IRRIGATION_DECISION_TOPIC_TMPL", "event/irrigationDecision/{field}/{sensor}")
 
 	consumer := rabbitmq.NewConsumer(mqClient, aggregatedSub, cfg.Exchange, nil)
-	decisionPublisher := rabbitmq.NewPublisher(mqClient, "event/irrigationDecision", cfg.Exchange)
+	decisionPublisher := rabbitmq.NewPublisher(mqClient, "", cfg.Exchange)
 
 	// OpenWeather client
 	owmKey := env("OWM_API_KEY", "changeme")
