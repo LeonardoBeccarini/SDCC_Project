@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"strings"
 )
 
 // IConsumer interface defines the ConsumeMessage method with dependencies T
@@ -34,12 +35,21 @@ func (c *Consumer) SetHandler(handler func(queue string, message mqtt.Message) e
 	c.handler = handler
 }
 
+func qosFor(topic string) byte {
+	t := strings.TrimSpace(topic)
+	if strings.HasPrefix(t, "sensor/aggregated") ||
+		strings.HasPrefix(t, "event/irrigationDecision") {
+		return 1
+	}
+	return 0
+}
+
 // ConsumeMessage subscribes to the topic and processes messages using the handler
 // It blocks until the context is cancelled.
 func (c *Consumer) ConsumeMessage(ctx context.Context) {
 	token := c.client.Subscribe(
 		c.topic,
-		0,
+		qosFor(c.topic),
 		func(client mqtt.Client, message mqtt.Message) {
 			if c.handler == nil {
 				fmt.Printf("No handler set for topic %s\n", c.topic)
@@ -93,7 +103,7 @@ func (m *MultiConsumer) ConsumeMessage(ctx context.Context) {
 		topic := topic // shadow for closure safety
 		token := m.client.Subscribe(
 			topic,
-			0,
+			qosFor(topic),
 			func(client mqtt.Client, msg mqtt.Message) {
 				if m.handler == nil {
 					fmt.Printf("No handler set for topic %s\n", topic)

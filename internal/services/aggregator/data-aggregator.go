@@ -44,6 +44,9 @@ func (d *DataAggregatorService) Start(ctx context.Context) {
 		if s.Aggregated {
 			return nil
 		}
+		//debug, messaggio in ingresso
+		log.Printf("aggregate: in  field=%s sensor=%s moisture=%d%% topic=%s",
+			s.FieldID, s.SensorID, s.Moisture, msg.Topic())
 		key := s.FieldID + "|" + s.SensorID
 		d.mu.Lock()
 		d.buffer[key] = append(d.buffer[key], s)
@@ -106,10 +109,11 @@ func (d *DataAggregatorService) flush() {
 		b, _ := json.Marshal(out)
 
 		topic := "sensor/aggregated/" + fieldID + "/" + sensorID
-		if err := d.publisher.PublishTo(topic, string(b)); err != nil {
+		// publish QoS=1 (retained=false)
+		if err := d.publisher.PublishToQos(topic, 1, false, string(b)); err != nil {
 			log.Printf("aggregate: publish err %v", err)
 		} else {
-			log.Printf("aggregate: published %s %s -> %d%%", fieldID, sensorID, avg)
+			log.Printf("aggregate: published %s %s -> %d%% (qos=1)", fieldID, sensorID, avg)
 		}
 		// clear
 		d.buffer[key] = readings[:0]

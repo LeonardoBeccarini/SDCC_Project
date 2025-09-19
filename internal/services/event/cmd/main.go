@@ -15,6 +15,11 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 
+	// aggiunte per dedup su Decision
+	"crypto/sha256"
+	"encoding/hex"
+	"github.com/LeonardoBeccarini/sdcc_project/pkg/dedup"
+
 	"github.com/LeonardoBeccarini/sdcc_project/internal/services/event"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 )
@@ -130,12 +135,32 @@ func main() {
 		writeAPI.WritePoint(p)
 		writer.MarkIngest(evt.EventType)
 	})
+
+	// deduper condiviso SOLO per event/irrigationDecision/#
+	d := dedup.New(10*time.Minute, 20000)
+
 	for _, topic := range cfg.Topics {
 		if strings.TrimSpace(topic) == "" {
 			continue
 		}
 		log.Printf("event-svc: subscribing to %s", topic)
-		if token := mqttClient.Subscribe(topic, 0, func(_ mqtt.Client, m mqtt.Message) { _ = h.Handle("", m) }); token.Wait() && token.Error() != nil {
+
+		// QoS per-topic: 1 solo per irrigationDecision, 0 per gli altri (es. StateChange)
+		qos := byte(0)
+		if strings.HasPrefix(topic, "event/irrigationDecision") {
+			qos = 1
+		}
+
+		if token := mqttClient.Subscribe(topic, qos, func(_ mqtt.Client, m mqtt.Message) {
+			// Dedup *solo* su event/irrigationDecision/# (QoS1 → possibili redelivery)
+			if strings.HasPrefix(m.Topic(), "event/irrigationDecision/") {
+				hh := sha256.Sum256(m.Payload())
+				if !d.ShouldProcess(hex.EncodeToString(hh[:])) {
+					return
+				}
+			}
+			_ = h.Handle("", m) // logica invariata
+		}); token.Wait() && token.Error() != nil {
 			log.Fatalf("subscribe error on %s: %v", topic, token.Error())
 		}
 	}

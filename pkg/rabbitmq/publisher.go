@@ -8,32 +8,44 @@ import (
 
 type IPublisher interface {
 	PublishMessage(message interface{}) error
+	PublishMessageQos(qos byte, retained bool, message interface{}) error
 	PublishTo(topic string, message interface{}) error
+	PublishToQos(topic string, qos byte, retained bool, message interface{}) error
 	Close()
 }
 
 type Publisher struct {
-	client   mqtt.Client
-	topic    string
-	exchange string
+	client          mqtt.Client
+	topic           string
+	exchange        string
+	defaultQoS      byte
+	defaultRetained bool
 }
 
 func NewPublisher(client mqtt.Client, topic string, exchange string) *Publisher {
-	return &Publisher{client: client, topic: topic, exchange: exchange}
+	return &Publisher{client: client, topic: topic, exchange: exchange, defaultQoS: 0, defaultRetained: false}
+}
+
+func NewPublisherWithQoS(client mqtt.Client, topic string, exchange string, qos byte, retained bool) *Publisher {
+	return &Publisher{client: client, topic: topic, exchange: exchange, defaultQoS: qos, defaultRetained: retained}
 }
 
 func (p *Publisher) PublishMessage(message interface{}) error {
 	return p.PublishTo(p.topic, message)
 }
-
+func (p *Publisher) PublishMessageQos(qos byte, retained bool, message interface{}) error {
+	return p.PublishToQos(p.topic, qos, retained, message)
+}
 func (p *Publisher) PublishTo(topic string, message interface{}) error {
-	if token := p.client.Publish(topic, 0, false, fmt.Sprintf("%v", message)); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to publish message to %s: %v", topic, token.Error())
+	return p.PublishToQos(topic, p.defaultQoS, p.defaultRetained, message)
+}
+func (p *Publisher) PublishToQos(topic string, qos byte, retained bool, message interface{}) error {
+	if token := p.client.Publish(topic, qos, retained, fmt.Sprintf("%v", message)); token.Wait() && token.Error() != nil {
+		return fmt.Errorf("failed to publish to %s: %v", topic, token.Error())
 	}
-	log.Printf("Message published to topic '%s'", topic)
+	log.Printf("published %s (qos=%d retained=%v)", topic, qos, retained)
 	return nil
 }
-
 func (p *Publisher) Close() {
 	if p.client.IsConnected() {
 		p.client.Disconnect(250)

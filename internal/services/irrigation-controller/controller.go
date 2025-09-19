@@ -13,6 +13,11 @@ import (
 	"sync"
 	"time"
 
+	// AGGIUNTE per dedup QoS1
+	"crypto/sha256"
+	"encoding/hex"
+	"github.com/LeonardoBeccarini/sdcc_project/pkg/dedup"
+
 	pb "github.com/LeonardoBeccarini/sdcc_project/grpc/gen/go/irrigation"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
@@ -58,6 +63,9 @@ type Controller struct {
 
 	// accesso sensori
 	mu sync.RWMutex
+
+	// ⬇️ NUOVO: deduper per scartare redelivery QoS1 (hash payload)
+	deduper *dedup.Deduper
 }
 
 // DeviceRouter espone un client gRPC per ogni field (field -> DeviceService).
@@ -139,6 +147,8 @@ func NewController(
 		dailyDay:          make(map[string]time.Time),
 		dailyBudget:       make(map[string]float64),
 		dailyRemaining:    make(map[string]float64),
+		// ⬇️ init deduper (TTL 10m, cap 20k)
+		deduper: dedup.New(10*time.Minute, 20000),
 	}
 	c.SetHandler(ctrl.handleAggregated)
 	return ctrl, nil
@@ -152,6 +162,12 @@ func (c *Controller) Start(ctx context.Context) {
 // ===================== handler dati aggregati =====================
 
 func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
+	// ⬇️ DEDUP PRIMA DI UNMARSHAL: scarta redelivery QoS1 identiche
+	h := sha256.Sum256(msg.Payload())
+	if c.deduper != nil && !c.deduper.ShouldProcess(hex.EncodeToString(h[:])) {
+		return nil
+	}
+
 	var s model.SensorData
 	if err := json.Unmarshal(msg.Payload(), &s); err != nil {
 		log.Printf("controller: bad payload: %v", err)
@@ -165,6 +181,11 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 	sensor, ok := c.lookupSensor(fieldID, sensorID)
 	if !ok {
 		log.Printf("controller: unknown sensor %s/%s", fieldID, sensorID)
+		return nil
+	}
+	device, ok := c.router.Get(fieldID)
+	if !ok {
+		log.Printf("controller: no device client for field=%s", fieldID)
 		return nil
 	}
 
@@ -241,31 +262,34 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 	}
 
 	// invoca DeviceService se serve
-	// invoca DeviceService se serve
 	if durationMin > 0 {
-		device, ok := c.router.Get(fieldID)
-		if !ok {
-			log.Printf("controller: no device client for field=%s → skip start, but publish decision", fieldID)
-			// NON rientrare: andiamo comunque a publishDecision più sotto
+		req := &pb.StartRequest{
+			FieldId:     fieldID,
+			SensorId:    sensorID,
+			AmountMm:    doseMM,
+			DurationMin: int32(durationMin),
+		}
+		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer rcancel()
+
+		if resp, err := device.StartIrrigation(rctx, req); err != nil {
+			log.Printf("controller: StartIrrigation error: %v", err)
+		} else if !resp.GetSuccess() {
+			log.Printf("controller: StartIrrigation failed: %s", resp.GetMessage())
 		} else {
-			req := &pb.StartRequest{FieldId: fieldID, SensorId: sensorID, AmountMm: doseMM, DurationMin: int32(durationMin)}
-			rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer rcancel()
-			if resp, err := device.StartIrrigation(rctx, req); err != nil {
-				log.Printf("controller: StartIrrigation error: %v", err)
-			} else if !resp.GetSuccess() {
-				log.Printf("controller: StartIrrigation failed: %s", resp.GetMessage())
-			} else {
-				until := time.Now().Add(time.Duration(durationMin) * time.Minute)
-				k := key(fieldID, sensorID)
-				c.wateringMu.Lock()
-				if prev, ok := c.wateringUntil[k]; !ok || until.After(prev) {
-					c.wateringUntil[k] = until
-				}
-				c.wateringMu.Unlock()
-				c.deductBudget(k, dayStart, doseMM)
-				log.Printf("controller: watering %s/%s ON per %d min (busy until %s)", fieldID, sensorID, durationMin, until.Format(time.RFC3339))
+			// avvio riuscito → aggiorna finestra busy-until
+			until := time.Now().Add(time.Duration(durationMin) * time.Minute)
+			k := key(fieldID, sensorID)
+			c.wateringMu.Lock()
+			if prev, ok := c.wateringUntil[k]; !ok || until.After(prev) {
+				c.wateringUntil[k] = until
 			}
+			c.wateringMu.Unlock()
+
+			// scala il residuo giornaliero
+			c.deductBudget(k, dayStart, doseMM)
+			log.Printf("controller: watering %s/%s ON per %d min (busy until %s)",
+				fieldID, sensorID, durationMin, until.Format(time.RFC3339))
 		}
 	}
 
@@ -277,8 +301,10 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 }
 
 // ===================== Budget helpers =====================
+// (immutati)
 
 func (c *Controller) ensureDailyBudget(ctx context.Context, s model.Sensor, dayStart time.Time) (eto, rain, remaining float64, err error) {
+	// ... (immutato)
 	k := key(s.FieldID, s.ID)
 
 	c.dailyMu.Lock()
@@ -294,11 +320,10 @@ func (c *Controller) ensureDailyBudget(ctx context.Context, s model.Sensor, dayS
 	}
 	c.dailyMu.Unlock()
 
-	// Calcolo budget: ET0 e pioggia del giorno
+	// Calcolo budget...
 	eto, rain, err = c.wclient.GetDailyET0AndRain(ctx, s.Latitude, s.Longitude,
 		time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), 0, 0, 0, 0, time.UTC))
 	if err != nil {
-		// fallback: valori benigni
 		log.Printf("controller: weather error for %s/%s: %v (fallback)", s.FieldID, s.ID, err)
 		eto, rain = 4.0, 0.0
 	}
@@ -318,12 +343,12 @@ func (c *Controller) ensureDailyBudget(ctx context.Context, s model.Sensor, dayS
 }
 
 func (c *Controller) deductBudget(k string, dayStart time.Time, applied float64) float64 {
+	// ... (immutato)
 	c.dailyMu.Lock()
 	defer c.dailyMu.Unlock()
 
 	day := c.dailyDay[k]
 	if !day.Equal(dayStart) {
-		// se cambia il giorno senza ensure, ricrea stato base
 		c.dailyDay[k] = dayStart
 		c.dailyBudget[k] = 0
 		c.dailyRemaining[k] = 0
@@ -359,13 +384,17 @@ func (c *Controller) publishDecision(fieldID, sensorID string, doseMM, durMin, S
 	}
 	b, _ := json.Marshal(evt)
 	topic := strings.NewReplacer("{field}", fieldID, "{sensor}", sensorID).Replace(c.decisionTopicTmpl)
-	if err := c.publisher.PublishTo(topic, string(b)); err != nil {
+
+	// ⬇️ UNICA MODIFICA QUI: publish decision a QoS=1
+	if err := c.publisher.PublishToQos(topic, 1, false, string(b)); err != nil {
 		log.Printf("controller: publish decision error: %v", err)
 		return err
 	}
-	log.Printf("decision: %s/%s dose=%.1fmm dur=%.0fmin topic=%s", fieldID, sensorID, doseMM, durMin, topic)
+	log.Printf("decision: %s/%s dose=%.1fmm dur=%.0fmin topic=%s (qos=1)", fieldID, sensorID, doseMM, durMin, topic)
 	return nil
 }
+
+// ... resto del file (helpers invariati) ...
 
 func (c *Controller) lookupSensor(fieldID, sensorID string) (model.Sensor, bool) {
 	c.mu.RLock()
