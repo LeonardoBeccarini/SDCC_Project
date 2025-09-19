@@ -101,8 +101,6 @@ func (i *Irrigation) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// ---------- Output per la dashboard (invariato)
-
 type DashboardData struct {
 	Sensors     []PersistenceLatest `json:"sensors"`
 	Irrigations []Irrigation        `json:"irrigations"`

@@ -10,9 +10,13 @@ RABBIT_SVC="${RABBIT_SVC:-rabbitmq}"
 GATEWAY_HOST="${GATEWAY_HOST:-}"      # es: my-tunnel.ngrok.app (senza /healthz)
 PROM_PORT="${PROM_PORT:-9091}"
 KPS_VALUES="${KPS_VALUES:-k8s/monitoring/helm-values/kps-values.yaml}"
-OPEN_PF="${OPEN_PF:-0}"               # =1 apre port-forward a fine setup
+OPEN_PF="${OPEN_PF:-0}"               # =1 apre port-forward Prometheus a fine setup
 MINIKUBE_AUTOSTART="${MINIKUBE_AUTOSTART:-1}"
 MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-sdcc-cluster}"
+
+# === Nuove variabili per Grafana ===
+DASHBOARD_JSON="${DASHBOARD_JSON:-metrics/dashboards/rabbitmq-dashboard.json}"
+DATASOURCE_YAML="${DATASOURCE_YAML:-k8s/monitoring/manifests/grafana-datasource-cm.yaml}"
 
 need(){ command -v "$1" >/dev/null 2>&1 || { echo "ERROR: manca $1"; exit 1; }; }
 need kubectl; need helm; need jq; need lsof; need curl
@@ -27,6 +31,28 @@ check_cluster() {
     minikube update-context -p "$MINIKUBE_PROFILE"
   fi
   kubectl cluster-info >/dev/null 2>&1 || { echo "ERROR: nessun cluster raggiungibile"; exit 1; }
+}
+
+# === Nuova funzione: crea/aggiorna CM dashboard SENZA annotations giganti ===
+upsert_dashboard_cm() {
+  local ns="$1" name="$2" file="$3" label_key="grafana_dashboard" label_val="1"
+
+  if [[ ! -f "$file" ]]; then
+    echo "WARN: dashboard JSON non trovato: $file — salto import."
+    return 0
+  fi
+
+  if kubectl -n "$ns" get configmap "$name" >/dev/null 2>&1; then
+    log "Aggiorno ConfigMap $name (replace)…"
+    kubectl -n "$ns" create configmap "$name" \
+      --from-file="rabbitmq-dashboard.json=$file" \
+      --dry-run=client -o yaml | kubectl replace -f -
+  else
+    log "Creo ConfigMap $name…"
+    kubectl -n "$ns" create configmap "$name" \
+      --from-file="rabbitmq-dashboard.json=$file"
+    kubectl -n "$ns" label configmap "$name" "$label_key=$label_val" --overwrite
+  fi
 }
 
 check_cluster
@@ -60,6 +86,21 @@ helm upgrade --install "$BLACKBOX_REL" prometheus-community/prometheus-blackbox-
   --set config.modules.tcp_connect.prober=tcp \
   --set config.modules.tcp_connect.timeout=5s
 
+# ===== Grafana: datasource (se c'è) + dashboard RabbitMQ via CM =====
+if [[ -f "$DATASOURCE_YAML" ]]; then
+  log "Applico datasource Grafana: $DATASOURCE_YAML"
+  kubectl -n "$NS_OP" apply -f "$DATASOURCE_YAML"
+else
+  echo "INFO: datasource YAML non trovato ($DATASOURCE_YAML) — salto."
+fi
+
+# Import dashboard RabbitMQ (no server-side apply)
+upsert_dashboard_cm "$NS_OP" "grafana-dashboard-rabbitmq" "$DASHBOARD_JSON"
+
+# (opzionale) forza il reload facendo restart della grafana
+kubectl -n "$NS_OP" rollout restart deploy ${REL}-grafana || true
+
+# ===== Blackbox + RabbitMQ SM/Probes =====
 BBSVC="$(kubectl -n "$NS_OP" get svc -l app.kubernetes.io/instance="$BLACKBOX_REL" -o jsonpath='{.items[0].metadata.name}')"
 log "blackbox service: $BBSVC.$NS_OP.svc.cluster.local:9115"
 
@@ -133,7 +174,7 @@ else
   echo "INFO: GATEWAY_HOST non impostato → salto Probe HTTP."
 fi
 
-# apri port-forward (opzionale)
+# apri port-forward Prometheus (opzionale)
 if [[ "$OPEN_PF" == "1" ]]; then
   log "Apro port-forward Prometheus su http://localhost:$PROM_PORT …"
   SVC=$(kubectl -n "$NS_OP" get svc prometheus-operated -o name 2>/dev/null | cut -d/ -f2 \
@@ -144,3 +185,4 @@ else
   echo "Setup finito. Per vedere Prometheus:"
   echo "  kubectl -n $NS_OP port-forward svc/kube-prometheus-stack-prometheus $PROM_PORT:9090"
 fi
+
