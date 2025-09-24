@@ -14,47 +14,43 @@ import (
 )
 
 func env(key, def string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
-	return v
+	return def
 }
 func envInt(key string, def int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
 	}
-	i, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return i
+	return def
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// MQTT
 	host := env("RABBITMQ_HOST", "localhost")
 	port := envInt("RABBITMQ_PORT", 1883)
 	user := env("RABBITMQ_USER", "guest")
 	pass := env("RABBITMQ_PASSWORD", "guest")
-	exchange := env("RABBITMQ_EXCHANGE", "sensor_data")
 	clientID := fmt.Sprintf("IrrigationController-%s", env("HOSTNAME", "local"))
 
-	cfg := &rabbitmq.RabbitMQConfig{Host: host, Port: port, User: user, Password: pass, ClientID: clientID, Exchange: exchange, Kind: "topic"}
+	cfg := &rabbitmq.RabbitMQConfig{Host: host, Port: port, User: user, Password: pass, ClientID: clientID, Kind: "topic"}
 	mqClient, err := rabbitmq.NewRabbitMQConn(cfg, ctx)
 	if err != nil {
 		log.Fatalf("MQTT connect failed: %v", err)
 	}
 
 	aggregatedSub := env("AGGREGATED_SUB_TOPIC", "sensor/aggregated/#")
+	resultSub := env("IRRIGATION_RESULT_SUB", "event/irrigationResult/#")
 	decisionTopicTmpl := env("IRRIGATION_DECISION_TOPIC_TMPL", "event/irrigationDecision/{field}/{sensor}")
 
-	consumer := rabbitmq.NewConsumer(mqClient, aggregatedSub, cfg.Exchange, nil)
-	decisionPublisher := rabbitmq.NewPublisher(mqClient, "", cfg.Exchange)
+	consumer := rabbitmq.NewConsumer(mqClient, aggregatedSub, nil)
+	decisionPublisher := rabbitmq.NewPublisher(mqClient, "")
 
 	// OpenWeather client
 	owmKey := env("OWM_API_KEY", "changeme")
@@ -85,6 +81,16 @@ func main() {
 		log.Fatalf("controller init: %v", err)
 	}
 
-	log.Printf("IrrigationController running. sub=%s decisions=%s routes=%s", aggregatedSub, decisionTopicTmpl, mapStr)
+	// Consumer dei Result (qos=1 gestito a livello consumer)
+	resConsumer := rabbitmq.NewConsumer(mqClient, resultSub, nil)
+	ctrl.AttachResultConsumer(resConsumer)
+
+	log.Printf("IrrigationController running. sub=%s decisions=%s routes=%s resultSub=%s", aggregatedSub, decisionTopicTmpl, mapStr, resultSub)
 	ctrl.Start(ctx)
+
+	// graceful shutdown
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	<-sigc
+	cancel()
 }

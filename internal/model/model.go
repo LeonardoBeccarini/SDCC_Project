@@ -15,12 +15,11 @@ type (
 	SensorData              = messages.SensorData              // misura suolo (raw/aggregata)
 	StateChangeEvent        = messages.StateChangeEvent        // evento cambio stato sensore
 	IrrigationDecisionEvent = messages.IrrigationDecisionEvent // evento decisione irrigazione
-)
+	IrrigationResultEvent   = messages.IrrigationResultEvent   //evento esito irrigazione
 
-// --- Entità dominio ---
-type (
-	Field            = entities.Field       // campo/appezzamento
-	Sensor           = entities.Sensor      // sensore (include posizione, flow, area, ecc.)
+	// Entità/parametri (già presenti)
+	Sensor           = entities.Sensor
+	Field            = entities.Field
 	State            = entities.SensorState // stato del dispositivo (se definito in entities)
 	IrrigationPolicy = entities.IrrigationPolicy
 )

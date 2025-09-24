@@ -47,7 +47,6 @@ func main() {
 	port := envInt("RABBITMQ_PORT", 1883)
 	user := env("RABBITMQ_USER", "guest")
 	pass := env("RABBITMQ_PASSWORD", "guest")
-	exchange := env("RABBITMQ_EXCHANGE", "sensor_data")
 	clientID := env("MQTT_CLIENT_ID", "aggregator-"+strconv.FormatInt(time.Now().Unix(), 10))
 
 	// Questo nodo edge aggrega un solo field (es. field1 o field2)
@@ -66,15 +65,15 @@ func main() {
 	window := envDur("AGGREGATION_WINDOW", 15*time.Minute)
 
 	ctx := context.Background()
-	cfg := &rabbitmq.RabbitMQConfig{Host: host, Port: port, User: user, Password: pass, Exchange: exchange, ClientID: clientID}
+	cfg := &rabbitmq.RabbitMQConfig{Host: host, Port: port, User: user, Password: pass, ClientID: clientID}
 	client, err := rabbitmq.NewRabbitMQConn(cfg, ctx)
 	if err != nil {
 		log.Fatalf("MQTT connect: %v", err)
 	}
 
 	// Publisher base, il servizio pubblicherà su sensor/aggregated/{field}/{sensor} tramite flush()
-	publisher := rabbitmq.NewPublisher(client, "", cfg.Exchange)
-	consumer := rabbitmq.NewMultiConsumer(client, topics, cfg.Exchange, nil)
+	publisher := rabbitmq.NewPublisher(client, "")
+	consumer := rabbitmq.NewMultiConsumer(client, topics, nil)
 
 	service := aggregator.NewDataAggregatorService(consumer, publisher, window)
 	log.Printf("Data Aggregator running. subs=%v window=%s", topics, window)

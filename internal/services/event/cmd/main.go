@@ -62,7 +62,6 @@ func main() {
 			User:     envStr("RABBITMQ_USER", "guest"),
 			Password: envStr("RABBITMQ_PASSWORD", "guest"),
 			ClientID: envStr("HOSTNAME", "event-service"),
-			Exchange: envStr("RABBITMQ_EXCHANGE", "amq.topic"),
 			Kind:     envStr("RABBITMQ_EXCHANGE_KIND", "topic"),
 		},
 

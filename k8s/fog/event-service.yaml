@@ -24,6 +24,11 @@ spec:
               value: "20ms"
             - name: JITTER
               value: "6ms"
+            - name: HTTP_PORT
+              value: "8080"
+            - name: RABBITMQ_EXCHANGE_KIND
+              value: "topic"
+
           command: [ "sh","-c" ]
           args:
             - >

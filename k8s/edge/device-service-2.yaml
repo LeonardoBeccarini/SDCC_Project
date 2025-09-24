@@ -44,6 +44,10 @@ spec:
             - { name: RABBITMQ_CLIENTID, value: "device-2" }
             - { name: EVENT_STATECHANGE_TEMPLATE, value: "event/StateChange/{field}/{sensor}" }
             - { name: SENSORS_CONFIG_PATH, value: "/app/config/sensors-config.json" }
+            - { name: IRRIGATION_RESULT_TOPIC_TMPL, value: "event/irrigationResult/{field}/{sensor}" }
+            - { name: SENSOR_DATA_SUB, value: "sensor/data/+/+" }
+            - { name: SENSOR_LIVENESS_TTL, value: "60s" }
+            - { name: OFFLINE_GRACE, value: "5s" }
           volumeMounts:
             - { name: sensors-config, mountPath: /app/config/sensors-config.json, subPath: sensors-config.json }
           livenessProbe:

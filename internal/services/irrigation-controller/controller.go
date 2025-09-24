@@ -2,6 +2,8 @@ package irrigation_controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,13 +15,9 @@ import (
 	"sync"
 	"time"
 
-	// AGGIUNTE per dedup QoS1
-	"crypto/sha256"
-	"encoding/hex"
-	"github.com/LeonardoBeccarini/sdcc_project/pkg/dedup"
-
 	pb "github.com/LeonardoBeccarini/sdcc_project/grpc/gen/go/irrigation"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
+	"github.com/LeonardoBeccarini/sdcc_project/pkg/dedup"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
@@ -28,8 +26,9 @@ import (
 
 const (
 	defaultTZ             = "Europe/Rome"
-	defaultBaseMM         = 5.0 // DAILY_BASE_MM
-	defaultEtoCoefficient = 0.5 // DAILY_ETO_COEFF
+	defaultBaseMM         = 5.0  // DAILY_BASE_MM
+	defaultEtoCoefficient = 0.5  // DAILY_ETO_COEFF
+	defaultPendingTTL     = "5m" // IRR_PENDING_TTL
 )
 
 // ===================== Controller =====================
@@ -41,10 +40,8 @@ type Controller struct {
 	wclient   WeatherClient
 	sensors   map[string]map[string]model.Sensor // field -> sensorID -> Sensor
 
-	// guard levels (percentuali), ordinati desc (es. 35,25)
-	guardLevels []float64
+	guardLevels []float64 // percentuali, desc
 
-	// parametri budget giornaliero
 	baseMM   float64
 	etoCoeff float64
 
@@ -57,24 +54,35 @@ type Controller struct {
 	// daily budget tracking
 	tz             *time.Location
 	dailyMu        sync.Mutex
-	dailyDay       map[string]time.Time // giorno (mezzanotte locale) per cui è valido il budget
-	dailyBudget    map[string]float64   // mm totali del giorno (solo informativo)
-	dailyRemaining map[string]float64   // mm residui nel giorno
+	dailyDay       map[string]time.Time
+	dailyBudget    map[string]float64
+	dailyRemaining map[string]float64
 
-	// accesso sensori
-	mu sync.RWMutex
+	mu sync.RWMutex // accesso mappa sensori
 
-	// ⬇️ NUOVO: deduper per scartare redelivery QoS1 (hash payload)
+	// dedup input (aggregated)
 	deduper *dedup.Deduper
+
+	// ==== NUOVO: gestione Result ====
+	resultConsumer rabbitmq.IConsumer[model.IrrigationResultEvent]
+	pending        sync.Map // ticket_id -> pendingEntry
+	processed      sync.Map // ticket_id -> struct{}{}
+	pendingTTL     time.Duration
 }
 
-// DeviceRouter espone un client gRPC per ogni field (field -> DeviceService).
+type pendingEntry struct {
+	FieldID    string
+	SensorID   string
+	DayStart   time.Time
+	ExpectedMM float64
+	Deadline   time.Time
+}
+
+// DeviceRouter e WeatherClient: invariati
 type DeviceRouter interface {
 	Get(field string) (pb.DeviceServiceClient, bool)
 	Close()
 }
-
-// WeatherClient restituisce ET0 e pioggia giornaliera (mm) per lat/lon/data.
 type WeatherClient interface {
 	GetDailyET0AndRain(ctx context.Context, lat, lon float64, day time.Time) (etoMM, rainMM float64, err error)
 }
@@ -109,14 +117,13 @@ func NewController(
 	}
 	loc, err := time.LoadLocation(tzName)
 	if err != nil {
-		log.Printf("WARN: invalid TZ=%q, falling back to local: %v", tzName, err)
+		log.Printf("WARN: invalid TZ=%q, using local: %v", tzName, err)
 		loc = time.Local
 	}
 
 	// guard levels
 	guards := parseGuards(os.Getenv("MOISTURE_GUARDS"))
 	if len(guards) == 0 {
-		// retro-compat: singola soglia
 		th := 35.0
 		if v := strings.TrimSpace(os.Getenv("MOISTURE_THRESHOLD_PCT")); v != "" {
 			if f, err := strconv.ParseFloat(strings.ReplaceAll(v, ",", "."), 64); err == nil && f > 0 {
@@ -125,12 +132,14 @@ func NewController(
 		}
 		guards = []float64{th}
 	}
-	// ordina desc (es. 35,25,15)
 	sortDesc(guards)
 
 	// budget params
 	baseMM := getenvFloat("DAILY_BASE_MM", defaultBaseMM)
 	etoCoeff := getenvFloat("DAILY_ETO_COEFF", defaultEtoCoefficient)
+
+	// pending TTL
+	pTTL := getenvDuration("IRR_PENDING_TTL", defaultPendingTTL)
 
 	ctrl := &Controller{
 		consumer:          c,
@@ -147,22 +156,37 @@ func NewController(
 		dailyDay:          make(map[string]time.Time),
 		dailyBudget:       make(map[string]float64),
 		dailyRemaining:    make(map[string]float64),
-		// ⬇️ init deduper (TTL 10m, cap 20k)
-		deduper: dedup.New(10*time.Minute, 20000),
+		deduper:           dedup.New(10*time.Minute, 20000),
+		pendingTTL:        pTTL,
 	}
 	c.SetHandler(ctrl.handleAggregated)
 	return ctrl, nil
 }
 
+// AttachResultConsumer permette di collegare il consumer su event/irrigationResult/# senza cambiare il costruttore.
+func (c *Controller) AttachResultConsumer(rc rabbitmq.IConsumer[model.IrrigationResultEvent]) {
+	c.resultConsumer = rc
+	if c.resultConsumer != nil {
+		c.resultConsumer.SetHandler(c.handleIrrigationResult)
+	}
+}
+
 func (c *Controller) Start(ctx context.Context) {
+	// dati aggregati (già esistente)
 	go c.consumer.ConsumeMessage(ctx)
+	// risultati irrigazione (nuovo, opzionale)
+	if c.resultConsumer != nil {
+		go c.resultConsumer.ConsumeMessage(ctx)
+	}
+	// GC pending (timeout)
+	go c.gcPending(ctx)
 	<-ctx.Done()
 }
 
 // ===================== handler dati aggregati =====================
 
 func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
-	// ⬇️ DEDUP PRIMA DI UNMARSHAL: scarta redelivery QoS1 identiche
+	// dedup QoS1
 	h := sha256.Sum256(msg.Payload())
 	if c.deduper != nil && !c.deduper.ShouldProcess(hex.EncodeToString(h[:])) {
 		return nil
@@ -189,20 +213,17 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 		return nil
 	}
 
-	// DEBUG: ingresso dato aggregato
 	log.Printf("agg: %s/%s moisture=%d%% at=%s (flow=%.2flpm area=%.2fm2 guards=%v)",
 		fieldID, sensorID, s.Moisture, s.Timestamp.UTC().Format(time.RFC3339), sensor.FlowLpm, sensor.AreaM2, c.guardLevels)
 
-	// Assicura budget del giorno (calcolato una volta con meteo)
 	dayStart := midnightLocal(time.Now(), c.tz)
-	_, _, rem, err := c.ensureDailyBudget(context.Background(), sensor, dayStart) // scarto eto/rain
+	_, _, rem, err := c.ensureDailyBudget(context.Background(), sensor, dayStart)
 	if err != nil {
 		log.Printf("controller: budget init error for %s/%s: %v", fieldID, sensorID, err)
 	}
 	log.Printf("budget: %s/%s day=%s remaining=%.2fmm", fieldID, sensorID, dayStart.Format("2006-01-02"), rem)
 
-	// === LOGICA DI IRRIGAZIONE (INALTERATA) ===
-	// Meteo per la formula dose esistente
+	// LOGICA di decisione invariata
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	eto, rain, wErr := c.wclient.GetDailyET0AndRain(ctx, sensor.Latitude, sensor.Longitude, time.Now().UTC())
@@ -212,29 +233,29 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 	}
 	log.Printf("weather: %s/%s et0=%.2f rain=%.2f", fieldID, sensorID, eto, rain)
 
-	// decisione semplice: se moisture (%) sotto soglia → irriga
 	doseMM := 0.0
 	preDose := 0.0
 	moist := float64(s.Moisture)
 	if belowAnyGuard(moist, c.guardLevels) {
-		base := 5.0 // mm di base (come prima)
+		base := 5.0
 		etoAdj := math.Max(0, eto-rain)
 		doseMM = base + 0.5*etoAdj
 		preDose = doseMM
-		log.Printf("decision-calc: %s/%s moist=%.1f%% < guards=%v → base=%.1f + 0.5*(%.2f-%.2f)=%.2f → preDose=%.2fmm", fieldID, sensorID, moist, c.guardLevels, base, eto, rain, etoAdj, preDose)
+		log.Printf("decision-calc: %s/%s moist=%.1f%% < guards=%v → base=%.1f + 0.5*(%.2f-%.2f)=%.2f → preDose=%.2fmm",
+			fieldID, sensorID, moist, c.guardLevels, base, eto, rain, etoAdj, preDose)
 	} else {
 		log.Printf("decision-skip: %s/%s moist=%.1f%% >= guards=%v → no irrigation", fieldID, sensorID, moist, c.guardLevels)
 	}
 
-	// *** UNICA AGGIUNTA: rispetta il budget residuo del giorno ***
+	// rispetto budget giornaliero
 	if doseMM > rem {
 		log.Printf("budget-cap: %s/%s preDose=%.2fmm > remaining=%.2fmm → capped to %.2fmm", fieldID, sensorID, doseMM, rem, rem)
 		doseMM = rem
 	}
 
-	// traduzione dose → minuti con flow/area
+	// mm→min
 	durationMin := 0
-	mmPerMin := sensor.MMPerMinute()
+	mmPerMin := mmPerMinute(sensor) // <-- helper locale per evitare unresolved
 	if doseMM > 0 && mmPerMin > 0 {
 		durationMin = int(math.Round(doseMM / mmPerMin))
 		if durationMin <= 0 {
@@ -246,28 +267,27 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 			fieldID, sensor.ID, sensor.FlowLpm, sensor.AreaM2)
 	}
 
-	// evita di schedulare se è già ON
+	// evita doppio ON
 	if durationMin > 0 {
 		now := time.Now()
 		k := key(fieldID, sensorID)
-
 		c.wateringMu.Lock()
-		busyUntil, have := c.wateringUntil[k]
-		if have && now.Before(busyUntil) {
+		if until, have := c.wateringUntil[k]; have && now.Before(until) {
 			c.wateringMu.Unlock()
-			log.Printf("controller: skip start %s/%s (già ON fino a %s)", fieldID, sensorID, busyUntil.Format(time.RFC3339))
+			log.Printf("controller: skip start %s/%s (già ON fino a %s)", fieldID, sensorID, until.Format(time.RFC3339))
 			return nil
 		}
 		c.wateringMu.Unlock()
 	}
 
-	// invoca DeviceService se serve
+	// chiamata gRPC
 	if durationMin > 0 {
 		req := &pb.StartRequest{
 			FieldId:     fieldID,
 			SensorId:    sensorID,
 			AmountMm:    doseMM,
 			DurationMin: int32(durationMin),
+			DecisionId:  fmt.Sprintf("%s|%s|%d", fieldID, sensorID, time.Now().UnixNano()),
 		}
 		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer rcancel()
@@ -277,7 +297,7 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 		} else if !resp.GetSuccess() {
 			log.Printf("controller: StartIrrigation failed: %s", resp.GetMessage())
 		} else {
-			// avvio riuscito → aggiorna finestra busy-until
+			// busy until per evitare doppio ON
 			until := time.Now().Add(time.Duration(durationMin) * time.Minute)
 			k := key(fieldID, sensorID)
 			c.wateringMu.Lock()
@@ -286,106 +306,104 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 			}
 			c.wateringMu.Unlock()
 
-			// scala il residuo giornaliero
-			c.deductBudget(k, dayStart, doseMM)
+			// *** CAMBIO QUI: niente decremento immediato ***
+			if tid := strings.TrimSpace(resp.GetTicketId()); tid != "" {
+				c.pending.Store(tid, pendingEntry{
+					FieldID: fieldID, SensorID: sensorID, DayStart: dayStart,
+					ExpectedMM: doseMM, Deadline: time.Now().Add(c.pendingTTL),
+				})
+				log.Printf("controller: pending add ticket=%s %s/%s expected=%.2fmm ttl=%s",
+					tid, fieldID, sensorID, doseMM, c.pendingTTL)
+			} else {
+				log.Printf("controller: warning: empty ticket_id from device")
+			}
+
 			log.Printf("controller: watering %s/%s ON per %d min (busy until %s)",
 				fieldID, sensorID, durationMin, until.Format(time.RFC3339))
 		}
 	}
 
-	// Pubblicazione evento decisione: invariata (solo se dose/durata > 0)
+	// publish decision (invariato)
 	if doseMM <= 0 || durationMin <= 0 {
 		return nil
 	}
 	return c.publishDecision(fieldID, sensorID, doseMM, float64(durationMin), moist)
 }
 
-// ===================== Budget helpers =====================
-// (immutati)
+// ===================== Risultati irrigazione (NUOVO) =====================
 
-func (c *Controller) ensureDailyBudget(ctx context.Context, s model.Sensor, dayStart time.Time) (eto, rain, remaining float64, err error) {
-	// ... (immutato)
-	k := key(s.FieldID, s.ID)
-
-	c.dailyMu.Lock()
-	day, have := c.dailyDay[k]
-	if have && day.Equal(dayStart) {
-		rem := c.dailyRemaining[k]
-		b := c.dailyBudget[k]
-		eto = 0
-		rain = 0
-		log.Printf("budget: reuse %s/%s day=%s daily=%.2fmm remaining=%.2fmm", s.FieldID, s.ID, dayStart.Format("2006-01-02"), b, rem)
-		c.dailyMu.Unlock()
-		return eto, rain, rem, nil
+func (c *Controller) handleIrrigationResult(_ string, m mqtt.Message) error {
+	var r model.IrrigationResultEvent
+	if err := json.Unmarshal(m.Payload(), &r); err != nil {
+		log.Printf("controller: bad result payload: %v", err)
+		return nil
 	}
-	c.dailyMu.Unlock()
-
-	// Calcolo budget...
-	eto, rain, err = c.wclient.GetDailyET0AndRain(ctx, s.Latitude, s.Longitude,
-		time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), 0, 0, 0, 0, time.UTC))
-	if err != nil {
-		log.Printf("controller: weather error for %s/%s: %v (fallback)", s.FieldID, s.ID, err)
-		eto, rain = 4.0, 0.0
-	}
-	B := c.baseMM + c.etoCoeff*math.Max(0, eto-rain)
-	if B < 0 {
-		B = 0
+	tid := strings.TrimSpace(r.TicketID)
+	if tid == "" {
+		return nil
 	}
 
-	c.dailyMu.Lock()
-	c.dailyDay[k] = dayStart
-	c.dailyBudget[k] = B
-	c.dailyRemaining[k] = B
-	log.Printf("budget: compute %s/%s day=%s et0=%.2f rain=%.2f base=%.2f coeff=%.2f → daily=%.2fmm", s.FieldID, s.ID, dayStart.Format("2006-01-02"), eto, rain, c.baseMM, c.etoCoeff, B)
-	c.dailyMu.Unlock()
+	// dedupe su ticket_id
+	if _, seen := c.processed.LoadOrStore(tid, struct{}{}); seen {
+		return nil
+	}
 
-	return eto, rain, B, nil
+	// prendi pending
+	var day time.Time
+	if v, ok := c.pending.LoadAndDelete(tid); ok {
+		pe := v.(pendingEntry)
+		day = pe.DayStart
+	} else {
+		// fallback: giorno corrente
+		day = midnightLocal(time.Now(), c.tz)
+	}
+
+	applied := r.MmApplied
+	// scala budget solo se OK o FAIL con mm_applied>0
+	if strings.EqualFold(r.Status, "OK") || (strings.EqualFold(r.Status, "FAIL") && applied > 0) {
+		k := key(r.FieldID, r.SensorID)
+		c.deductBudget(k, day, applied)
+		log.Printf("controller: result ticket=%s %s → applied=%.2fmm status=%s", tid, k, applied, r.Status)
+	} else {
+		log.Printf("controller: result ticket=%s %s → no scaling (status=%s, mm=%.2f)", tid, key(r.FieldID, r.SensorID), r.Status, applied)
+	}
+
+	return nil
 }
 
-func (c *Controller) deductBudget(k string, dayStart time.Time, applied float64) float64 {
-	// ... (immutato)
-	c.dailyMu.Lock()
-	defer c.dailyMu.Unlock()
-
-	day := c.dailyDay[k]
-	if !day.Equal(dayStart) {
-		c.dailyDay[k] = dayStart
-		c.dailyBudget[k] = 0
-		c.dailyRemaining[k] = 0
+func (c *Controller) gcPending(ctx context.Context) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			now := time.Now()
+			c.pending.Range(func(k, v any) bool {
+				pe := v.(pendingEntry)
+				if now.After(pe.Deadline) {
+					c.pending.Delete(k)
+					log.Printf("controller: pending expired ticket=%s %s/%s", k, pe.FieldID, pe.SensorID)
+				}
+				return true
+			})
+		}
 	}
-
-	rem := c.dailyRemaining[k] - applied
-	if rem < 0 {
-		rem = 0
-	}
-	c.dailyRemaining[k] = rem
-	fs := strings.ReplaceAll(k, "|", "/")
-	log.Printf("budget: after apply %s applied=%.2fmm remaining=%.2fmm", fs, applied, rem)
-	return rem
 }
 
 // ===================== Publish & utilities =====================
 
 func (c *Controller) publishDecision(fieldID, sensorID string, doseMM, durMin, SMT float64) error {
-	// evita pubblicazioni "0 mm / 0 min" (logica inalterata)
 	if doseMM <= 0 || durMin <= 0 {
 		return nil
 	}
-
 	evt := model.IrrigationDecisionEvent{
-		FieldID:        fieldID,
-		SensorID:       sensorID,
-		Stage:          "", // invariante rispetto alla pipeline attuale
-		DrPct:          0,
-		SMT:            SMT,
-		DoseMM:         doseMM,
-		RemainingToday: 0, // lasciato invariato nella pubblicazione
-		Timestamp:      time.Now().UTC(),
+		FieldID: fieldID, SensorID: sensorID, Stage: "", DrPct: 0, SMT: SMT,
+		DoseMM: doseMM, RemainingToday: 0, Timestamp: time.Now().UTC(),
 	}
 	b, _ := json.Marshal(evt)
 	topic := strings.NewReplacer("{field}", fieldID, "{sensor}", sensorID).Replace(c.decisionTopicTmpl)
-
-	// ⬇️ UNICA MODIFICA QUI: publish decision a QoS=1
 	if err := c.publisher.PublishToQos(topic, 1, false, string(b)); err != nil {
 		log.Printf("controller: publish decision error: %v", err)
 		return err
@@ -394,7 +412,84 @@ func (c *Controller) publishDecision(fieldID, sensorID string, doseMM, durMin, S
 	return nil
 }
 
-// ... resto del file (helpers invariati) ...
+// ==== helpers (lookup, loadSensors, conversions, math, etc.) ====
+
+// ensureDailyBudget inizializza (o riapre) il budget giornaliero per il sensore/field
+// alla mezzanotte "dayStart" e restituisce: budget del giorno, consumato e rimanente.
+// Logica: budget = baseMM + etoCoeff * max(0, et0 - rain).
+func (c *Controller) ensureDailyBudget(ctx context.Context, s model.Sensor, dayStart time.Time) (dayBudget, consumed, remaining float64, err error) {
+	k := key(s.FieldID, s.ID)
+
+	c.dailyMu.Lock()
+	defer c.dailyMu.Unlock()
+
+	lastDay, have := c.dailyDay[k]
+	if !have || !lastDay.Equal(dayStart) {
+		// Nuovo giorno: ricalcola il budget
+		var eto, rain float64
+		if c.wclient != nil {
+			eto, rain, err = c.wclient.GetDailyET0AndRain(ctx, s.Latitude, s.Longitude, dayStart)
+			if err != nil {
+				// Non fallire la logica: usa 0/0 se meteo non disponibile
+				eto, rain = 0, 0
+			}
+		}
+		etoAdj := math.Max(0, eto-rain)
+		budget := c.baseMM + c.etoCoeff*etoAdj
+		if budget < 0 {
+			budget = 0
+		}
+
+		c.dailyDay[k] = dayStart
+		c.dailyBudget[k] = budget
+		c.dailyRemaining[k] = budget
+	}
+
+	dayBudget = c.dailyBudget[k]
+	remaining = c.dailyRemaining[k]
+	consumed = dayBudget - remaining
+	return dayBudget, consumed, remaining, nil
+}
+
+// deductBudget scala in modo atomico il budget rimanente del giorno per (field|sensor).
+// Non scende sotto zero e non modifica la logica esistente del controller.
+func (c *Controller) deductBudget(key string, dayStart time.Time, mm float64) {
+	if mm <= 0 {
+		return
+	}
+
+	c.dailyMu.Lock()
+	defer c.dailyMu.Unlock()
+
+	// Se per qualche motivo il giorno non è inizializzato, inizializzalo in modo conservativo.
+	if lastDay, ok := c.dailyDay[key]; !ok || !lastDay.Equal(dayStart) {
+		c.dailyDay[key] = dayStart
+		if _, ok := c.dailyBudget[key]; !ok {
+			c.dailyBudget[key] = 0
+		}
+		if _, ok := c.dailyRemaining[key]; !ok {
+			c.dailyRemaining[key] = c.dailyBudget[key]
+		}
+	}
+
+	newRemaining := c.dailyRemaining[key] - mm
+	if newRemaining < 0 {
+		newRemaining = 0
+	}
+	c.dailyRemaining[key] = newRemaining
+}
+
+func getenvDuration(k, def string) time.Duration {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		v = def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return time.Minute * 5
+	}
+	return d
+}
 
 func (c *Controller) lookupSensor(fieldID, sensorID string) (model.Sensor, bool) {
 	c.mu.RLock()
@@ -407,14 +502,12 @@ func (c *Controller) lookupSensor(fieldID, sensorID string) (model.Sensor, bool)
 	return model.Sensor{}, false
 }
 
-// carica i sensori dal file JSON accettando sia "flow_lpm" sia "flow_rate".
 func loadSensors(path string) (map[string]map[string]model.Sensor, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	// leggo come map[string][]map[string]any così posso gestire alias dei campi
 	var m map[string][]map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
@@ -425,7 +518,6 @@ func loadSensors(path string) (map[string]map[string]model.Sensor, error) {
 		inner := make(map[string]model.Sensor, len(list))
 		for _, rec := range list {
 			var s model.Sensor
-			// id e field
 			if v, ok := rec["id"].(string); ok {
 				s.ID = v
 			}
@@ -433,24 +525,17 @@ func loadSensors(path string) (map[string]map[string]model.Sensor, error) {
 				return nil, fmt.Errorf("sensor without id in field %s", fid)
 			}
 			s.FieldID = fid
-
-			// geo/depth
 			s.Latitude = toF64(rec["latitude"])
 			s.Longitude = toF64(rec["longitude"])
 			if md, ok := rec["max_depth"]; ok {
 				s.MaxDepth = int(toF64(md))
 			}
-
-			// area
 			s.AreaM2 = toF64(rec["area_m2"])
-
-			// portata: preferisci flow_lpm, altrimenti flow_rate
 			flow := toF64(rec["flow_lpm"])
 			if flow == 0 {
 				flow = toF64(rec["flow_rate"])
 			}
 			s.FlowLpm = flow
-
 			inner[s.ID] = s
 		}
 		out[fid] = inner
@@ -476,8 +561,6 @@ func toF64(v any) float64 {
 	}
 	return 0
 }
-
-// --------------------- small helpers ---------------------
 
 func key(fid, sid string) string { return fid + "|" + sid }
 
@@ -544,4 +627,12 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// mmPerMinute: 1 L/m2 = 1 mm
+func mmPerMinute(s model.Sensor) float64 {
+	if s.AreaM2 <= 0 || s.FlowLpm <= 0 {
+		return 0
+	}
+	return s.FlowLpm / s.AreaM2
 }

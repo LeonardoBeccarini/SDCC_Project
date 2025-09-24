@@ -28,7 +28,6 @@ func main() {
 	portStr := mustGetenv("RABBITMQ_PORT")
 	user := mustGetenv("RABBITMQ_USER")
 	pass := mustGetenv("RABBITMQ_PASSWORD")
-	exchange := os.Getenv("RABBITMQ_EXCHANGE")
 	clientID := os.Getenv("MQTT_CLIENT_ID")
 	if strings.TrimSpace(clientID) == "" {
 		clientID = "sensor-simulator-" + strconv.FormatInt(time.Now().Unix(), 10)
@@ -88,7 +87,6 @@ func main() {
 		Port:     port,
 		User:     user,
 		Password: pass,
-		Exchange: exchange,
 		ClientID: clientID,
 	}
 
@@ -102,7 +100,7 @@ func main() {
 
 	// Telemetria raw: sensor/data/{field}/{sensor}
 	pubTopic := "sensor/data/" + sensor.FieldID + "/" + sensor.ID
-	publisher := rabbitmq.NewPublisher(client, pubTopic, cfg.Exchange)
+	publisher := rabbitmq.NewPublisher(client, pubTopic)
 
 	// Eventi di stato destinati al sensore
 	topicTmpl := os.Getenv("STATE_CHANGE_TOPIC_TMPL")
@@ -111,7 +109,7 @@ func main() {
 	}
 	replacer := strings.NewReplacer("{field}", sensor.FieldID, "{sensor}", sensor.ID)
 	stateTopic := replacer.Replace(topicTmpl)
-	consumer := rabbitmq.NewConsumer(client, stateTopic, cfg.Exchange, nil)
+	consumer := rabbitmq.NewConsumer(client, stateTopic, nil)
 
 	// Generatore: seed UNA SOLA VOLTA da SoilGrids all'avvio; poi gestione interna
 	gen := sensor_simulator.NewDataGenerator(0.001)

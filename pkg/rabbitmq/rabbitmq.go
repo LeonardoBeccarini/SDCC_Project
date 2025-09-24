@@ -16,7 +16,6 @@ type RabbitMQConfig struct {
 	User     string
 	Password string
 	ClientID string // Client ID to be used for the connection
-	Exchange string // Exchange name to be declared
 	Kind     string // Exchange type (topic, fanout, etc.)
 }
 

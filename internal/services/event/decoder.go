@@ -11,10 +11,9 @@ import (
 	msg "github.com/LeonardoBeccarini/sdcc_project/internal/model/messages"
 )
 
-// CommonEvent is the normalized event that we persist to Influx.
 type CommonEvent struct {
-	EventType     string // irrigation.decision | device.state_change
-	SourceService string // irrigation-controller | device | ...
+	EventType     string // irrigation.decision | device.state_change | irrigation.result
+	SourceService string // irrigation-controller | device-service | ...
 	FieldID       string
 	SensorID      string
 	Severity      string // info|warning|error
@@ -22,152 +21,123 @@ type CommonEvent struct {
 	Timestamp     time.Time
 }
 
-// MQTTHandler glues MQTT messages -> CommonEvent -> sink
-type MQTTHandler struct {
-	sink func(CommonEvent)
-}
+// MQTTHandler trasforma messaggi MQTT in CommonEvent e li passa a sink (Influx).
+type MQTTHandler struct{ sink func(CommonEvent) }
 
-func NewMQTTHandler(sink func(CommonEvent)) *MQTTHandler {
-	return &MQTTHandler{sink: sink}
-}
+func NewMQTTHandler(sink func(CommonEvent)) *MQTTHandler { return &MQTTHandler{sink: sink} }
 
 func (h *MQTTHandler) Handle(_ string, m mqtt.Message) error {
 	topic := m.Topic()
 	payload := m.Payload()
 
-	var evt CommonEvent
-	var err error
-
+	var (
+		evt CommonEvent
+		err error
+	)
 	switch {
 	case strings.HasPrefix(topic, "event/irrigationDecision/"):
 		evt, err = decodeDecision(topic, payload)
 	case strings.HasPrefix(topic, "event/StateChange/"):
 		evt, err = decodeStateChange(topic, payload)
+	case strings.HasPrefix(topic, "event/irrigationResult/"):
+		evt, err = decodeIrrigationResult(topic, payload)
 	default:
-		return nil // silently ignore unknown topics
+		return nil // ignora altri topic
 	}
 	if err != nil {
 		return err
 	}
-
-	// Emit downstream
-	h.sink(evt)
+	if h.sink != nil {
+		h.sink(evt)
+	}
 	return nil
 }
 
-func decodeDecision(topic string, b []byte) (CommonEvent, error) {
-	var dec msg.IrrigationDecisionEvent
-	if err := json.Unmarshal(b, &dec); err != nil {
+func decodeDecision(topic string, payload []byte) (CommonEvent, error) {
+	var d msg.IrrigationDecisionEvent
+	if err := json.Unmarshal(payload, &d); err != nil {
 		return CommonEvent{}, err
 	}
-	field, sensor := extractIDs(topic)
-
-	// If timestamp not set, use now
-	ts := dec.Timestamp
-	if ts.IsZero() {
-		ts = time.Now()
+	fieldID, sensorID := pickIDs(topic, d.FieldID, d.SensorID, "event/irrigationDecision/")
+	if fieldID == "" || sensorID == "" {
+		return CommonEvent{}, errors.New("decision: missing field/sensor")
 	}
-
-	fields := map[string]interface{}{
-		"stage":              dec.Stage,
-		"dr_pct":             dec.DrPct,
-		"smt_pct":            dec.SMT,
-		"dose_mm":            dec.DoseMM,
-		"remaining_today_mm": dec.RemainingToday,
-	}
-
 	return CommonEvent{
 		EventType:     "irrigation.decision",
 		SourceService: "irrigation-controller",
-		FieldID:       coalesce(dec.FieldID, field),
-		SensorID:      coalesce(dec.SensorID, sensor),
+		FieldID:       fieldID,
+		SensorID:      sensorID,
 		Severity:      "info",
-		Fields:        fields,
-		Timestamp:     ts,
+		Fields: map[string]interface{}{
+			"dose_mm":         d.DoseMM,
+			"remaining_today": d.RemainingToday,
+			"dr_pct":          d.DrPct,
+			"smt_pct":         d.SMT,
+		},
+		Timestamp: d.Timestamp,
 	}, nil
 }
 
-func decodeStateChange(topic string, b []byte) (CommonEvent, error) {
-	// Accept a flexible JSON object with at least 'status' and optional 'duration' and 'reason'
-	var obj map[string]interface{}
-	if err := json.Unmarshal(b, &obj); err != nil {
+func decodeStateChange(topic string, payload []byte) (CommonEvent, error) {
+	var s msg.StateChangeEvent
+	if err := json.Unmarshal(payload, &s); err != nil {
 		return CommonEvent{}, err
 	}
-	status, _ := obj["status"].(string)
-	// Fallback per payload che usano "new_state" invece di "status"
-	if strings.TrimSpace(status) == "" {
-		if ns, ok := obj["new_state"].(string); ok && strings.TrimSpace(ns) != "" {
-			status = ns
-		}
+	fieldID, sensorID := pickIDs(topic, s.FieldID, s.SensorID, "event/StateChange/")
+	if fieldID == "" || sensorID == "" {
+		return CommonEvent{}, errors.New("stateChange: missing field/sensor")
 	}
-	if strings.TrimSpace(status) == "" {
-		return CommonEvent{}, errors.New("missing status")
-	}
-	field, sensor := extractIDs(topic)
-
-	// timestamp: allow explicit 'timestamp' (RFC3339) else now
-	var ts time.Time
-	if v, ok := obj["timestamp"].(string); ok {
-		if p, err := time.Parse(time.RFC3339, v); err == nil {
-			ts = p
-		}
-	}
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-
-	fields := map[string]interface{}{
-		"status": status,
-	}
-	if v, ok := obj["duration"].(string); ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			fields["duration_s"] = int64(d / time.Second)
-		}
-	}
-	if v, ok := obj["duration"].(float64); ok {
-		// Go time.Duration marshalla come intero di nanosecondi; in JSON lo vedi come float64
-		fields["duration_s"] = int64(v) / int64(time.Second)
-	}
-
-	if v, ok := obj["reason"].(string); ok && v != "" {
-		fields["reason"] = v
-	}
-
 	return CommonEvent{
 		EventType:     "device.state_change",
-		SourceService: "device",
-		FieldID:       field,
-		SensorID:      sensor,
+		SourceService: "device-service",
+		FieldID:       fieldID,
+		SensorID:      sensorID,
 		Severity:      "info",
-		Fields:        fields,
-		Timestamp:     ts,
+		Fields: map[string]interface{}{
+			"new_state": s.NewState,
+			"duration":  s.Duration.Seconds(),
+		},
+		Timestamp: s.Timestamp,
 	}, nil
 }
 
-// extractIDs returns the last two non-empty path segments as fieldID and sensorID.
-func extractIDs(topic string) (fieldID, sensorID string) {
-	parts := strings.Split(topic, "/")
-	// walk from end, collect two non-empty, non-wildcard segments
-	var collected []string
-	for i := len(parts) - 1; i >= 0 && len(collected) < 2; i-- {
-		seg := strings.TrimSpace(parts[i])
-		if seg == "" || seg == "#" || seg == "+" {
-			continue
-		}
-		collected = append(collected, seg)
+func decodeIrrigationResult(topic string, payload []byte) (CommonEvent, error) {
+	var r msg.IrrigationResultEvent
+	if err := json.Unmarshal(payload, &r); err != nil {
+		return CommonEvent{}, err
 	}
-	if len(collected) == 2 {
-		sensorID = collected[0]
-		fieldID = collected[1]
+	fieldID, sensorID := pickIDs(topic, r.FieldID, r.SensorID, "event/irrigationResult/")
+	if fieldID == "" || sensorID == "" {
+		return CommonEvent{}, errors.New("result: missing field/sensor")
 	}
-	return
+	sev := "info"
+	if strings.EqualFold(r.Status, "FAIL") {
+		sev = "warning"
+	}
+	return CommonEvent{
+		EventType:     "irrigation.result",
+		SourceService: "device-service",
+		FieldID:       fieldID,
+		SensorID:      sensorID,
+		Severity:      sev,
+		Fields: map[string]interface{}{
+			"status":     r.Status,
+			"mm_applied": r.MmApplied,
+			"reason":     r.Reason,
+		},
+		Timestamp: r.Timestamp,
+	}, nil
 }
 
-func coalesce(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
+// pickIDs usa payload, oppure topic "prefix/{field}/{sensor}".
+func pickIDs(topic, fieldID, sensorID, prefix string) (string, string) {
+	if strings.TrimSpace(fieldID) != "" && strings.TrimSpace(sensorID) != "" {
+		return fieldID, sensorID
 	}
-	return ""
+	suffix := strings.TrimPrefix(topic, prefix)
+	parts := strings.Split(suffix, "/")
+	if len(parts) >= 2 {
+		return parts[0], parts[1]
+	}
+	return fieldID, sensorID
 }

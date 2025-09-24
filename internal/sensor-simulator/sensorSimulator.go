@@ -2,9 +2,12 @@ package sensor_simulator
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
+	"github.com/LeonardoBeccarini/sdcc_project/pkg/dedup"
 	"log"
 	"sync"
 	"time"
@@ -20,20 +23,18 @@ type SensorSimulator struct {
 	generator *DataGenerator
 	publisher rabbitmq.IPublisher
 	consumer  rabbitmq.IConsumer[mqtt.Message]
+	deduper   *dedup.Deduper
 }
 
 // NewSensorSimulator takes exactly one Sensor entity
-func NewSensorSimulator(
-	consumer rabbitmq.IConsumer[mqtt.Message],
-	publisher rabbitmq.IPublisher,
-	gen *DataGenerator,
-	sensor *model.Sensor,
-) *SensorSimulator {
+func NewSensorSimulator(consumer rabbitmq.IConsumer[mqtt.Message], publisher rabbitmq.IPublisher,
+	gen *DataGenerator, sensor *model.Sensor) *SensorSimulator {
 	return &SensorSimulator{
 		sensor:    sensor,
 		generator: gen,
 		publisher: publisher,
 		consumer:  consumer,
+		deduper:   dedup.New(2*time.Minute, 10000), // TTL e cap
 	}
 }
 
@@ -73,7 +74,16 @@ func (s *SensorSimulator) Start(
 
 // handleMessage expects StateChangeEvent for *this* sensor
 func (s *SensorSimulator) handleMessage(queue string, msg mqtt.Message) error {
+	// Dedup a payload: redelivery QoS1 ha lo stesso payload → stesso hash
+	h := sha256.Sum256(msg.Payload())
+	if s.deduper != nil && !s.deduper.ShouldProcess(hex.EncodeToString(h[:])) {
+		return nil // duplicato → ignora
+	}
+
 	var evt model.StateChangeEvent
+	if err := json.Unmarshal(msg.Payload(), &evt); err != nil {
+		return fmt.Errorf("invalid StateChangeEvent: %w", err)
+	}
 	if err := json.Unmarshal(msg.Payload(), &evt); err != nil {
 		return fmt.Errorf("invalid StateChangeEvent: %w", err)
 	}

@@ -5,23 +5,24 @@ metadata:
   namespace: fog
 spec:
   replicas: 1
-  selector: { matchLabels: { app: irrigation-controller } }
+  selector:
+    matchLabels: { app: irrigation-controller }
   template:
     metadata:
       labels: { app: irrigation-controller }
     spec:
+      nodeSelector: { role: fog }
+
       initContainers:
         - name: netem
           image: alpine:3.20
           securityContext:
             capabilities:
-              add: [ "NET_ADMIN" ]
+              add: ["NET_ADMIN"]
           env:
-            - name: DELAY
-              value: "20ms"
-            - name: JITTER
-              value: "6ms"
-          command: [ "sh","-c" ]
+            - { name: DELAY,  value: "20ms" }
+            - { name: JITTER, value: "6ms" }
+          command: ["sh","-c"]
           args:
             - >
               apk add --no-cache iproute2 &&
@@ -29,26 +30,48 @@ spec:
               tc qdisc add dev eth0 root netem delay ${DELAY} ${JITTER} distribution normal &&
               tc qdisc show dev eth0
 
-      nodeSelector: { role: fog }
       containers:
         - name: irrigation-controller
           image: sdcc/irrigation-controller:local
           imagePullPolicy: IfNotPresent
+
           envFrom:
             - configMapRef: { name: mqtt-common }
-            - secretRef: { name: mqtt-credentials }
+            - secretRef:    { name: mqtt-credentials }
+
           env:
             - { name: HOSTNAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
-            - { name: AGGREGATED_SUB_TOPIC, value: "sensor/aggregated/#" }
+
+            # Topic (coerenti con main.go)
+            - { name: AGGREGATED_SUB_TOPIC,           value: "sensor/aggregated/#" }
+            - { name: IRRIGATION_RESULT_SUB,          value: "event/irrigationResult/#" }
             - { name: IRRIGATION_DECISION_TOPIC_TMPL, value: "event/irrigationDecision/{field}/{sensor}" }
+
+            # Router gRPC per field -> device-service
             - { name: DEVICE_GRPC_ADDR_MAP, value: "field_1=device-svc-field1.edge.svc.cluster.local:50051,field_2=device-svc-field2.edge.svc.cluster.local:50051" }
+
+            # Config sensori (obbligatoria)
             - { name: SENSORS_CONFIG_PATH, value: "/app/config/sensors-config.json" }
-            - { name: MOISTURE_THRESHOLD_PCT, value: "35" }
+
+            # Parametri irrigazione (opzionali, ma utili)
+            - { name: MOISTURE_GUARDS,  value: "35" }        # fallback gestito anche via MOISTURE_THRESHOLD_PCT
+            - { name: DAILY_BASE_MM,    value: "5.0" }
+            - { name: DAILY_ETO_COEFF,  value: "0.5" }
+            - { name: IRR_PENDING_TTL,  value: "5m" }
+            - { name: TZ,               value: "Europe/Rome" }
+
+            # OpenWeather (da Secret allegata)
             - name: OWM_API_KEY
               valueFrom:
-                secretKeyRef: { name: weather-owm, key: OWM_API_KEY }
+                secretKeyRef:
+                  name: weather-owm
+                  key: OWM_API_KEY
+
           volumeMounts:
-            - { name: sensors-config, mountPath: /app/config/sensors-config.json, subPath: sensors-config.json }
+            - name: sensors-config
+              mountPath: /app/config/sensors-config.json
+              subPath: sensors-config.json
+
       volumes:
         - name: sensors-config
           configMap: { name: sensors-config }

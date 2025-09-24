@@ -6,7 +6,6 @@ metadata:
 data:
   RABBITMQ_HOST: "rabbitmq.rabbitmq.svc.cluster.local"
   RABBITMQ_PORT: "1883"
-  RABBITMQ_EXCHANGE: "sensor_data"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -16,7 +15,6 @@ metadata:
 data:
   RABBITMQ_HOST: "rabbitmq.rabbitmq.svc.cluster.local"
   RABBITMQ_PORT: "1883"
-  RABBITMQ_EXCHANGE: "sensor_data"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -26,7 +24,6 @@ metadata:
 data:
   RABBITMQ_HOST: "rabbitmq.rabbitmq.svc.cluster.local"
   RABBITMQ_PORT: "1883"
-  RABBITMQ_EXCHANGE: "sensor_data"
 ---
 apiVersion: v1
 kind: Secret

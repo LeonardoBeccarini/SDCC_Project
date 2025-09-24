@@ -1,3 +1,4 @@
+// internal/services/device/cmd/main.go
 package main
 
 import (
@@ -39,16 +40,22 @@ func main() {
 	clientID := mustEnv("RABBITMQ_CLIENTID", "device-service")
 	grpcPort := mustEnv("GRPC_PORT", "50051")
 	sensorsPath := mustEnv("SENSORS_CONFIG_PATH", "/app/config/sensors-config.json")
-	exchange := mustEnv("RABBITMQ_EXCHANGE", "sensor_data")
 
-	topicTmpl := mustEnv("EVENT_STATECHANGE_TEMPLATE", "event/StateChange/{field}/{sensor}")
+	// Topics / templates
+	stateTopicTmpl := mustEnv("EVENT_STATECHANGE_TEMPLATE", "event/StateChange/{field}/{sensor}")
+	resultTopicTmpl := mustEnv("IRRIGATION_RESULT_TOPIC_TMPL", "event/irrigationResult/{field}/{sensor}")
+
+	// Liveness (heartbeat) config
+	sensorDataSub := mustEnv("SENSOR_DATA_SUB", "sensor/data/+/+")
+	livenessTTLStr := mustEnv("SENSOR_LIVENESS_TTL", "60s")
+	offlineGraceStr := mustEnv("OFFLINE_GRACE", "5s")
 
 	port, err := strconv.Atoi(strings.TrimSpace(portStr))
 	if err != nil {
 		log.Fatalf("invalid RABBITMQ_PORT: %v", err)
 	}
 
-	// ---- Carica sensori: mappa field -> sensori ----
+	// ---- Load sensors: map field -> []Sensor -> map field -> Field{Sensors}
 	raw, err := os.ReadFile(sensorsPath)
 	if err != nil {
 		log.Fatalf("read sensors config: %v", err)
@@ -57,19 +64,18 @@ func main() {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		log.Fatalf("unmarshal sensors config: %v", err)
 	}
-	fields := make(map[string]model.Field)
+	fields := make(map[string]model.Field, len(cfg))
 	for fid, list := range cfg {
 		fields[fid] = model.Field{ID: fid, Sensors: list}
 	}
 
-	// ---- MQTT (RabbitMQ con exchange "topic") ----
+	// ---- MQTT (RabbitMQ topic)
 	rmqc := &rabbitmq.RabbitMQConfig{
 		Host:     host,
 		Port:     port,
 		User:     user,
 		Password: pass,
 		ClientID: clientID,
-		Exchange: exchange,
 		Kind:     "topic",
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -80,36 +86,54 @@ func main() {
 		log.Fatalf("MQTT connect error: %v", err)
 	}
 
-	// factory per creare un publisher col topic calcolato
+	// Publisher factory (fits device.GrpcHandler expectation)
 	publisherFactory := func(topic string) rabbitmq.IPublisher {
-		return rabbitmq.NewPublisher(client, topic, rmqc.Exchange)
+		return rabbitmq.NewPublisher(client, topic)
 	}
 
-	// ---- gRPC server ----
+	// ---- Build handler
+	handler := device.NewGrpcHandler(publisherFactory, stateTopicTmpl, fields)
+	handler.SetResultTopicTemplate(resultTopicTmpl)
+
+	// Parse liveness durations
+	lttl, err := time.ParseDuration(livenessTTLStr)
+	if err != nil {
+		lttl = 60 * time.Second
+	}
+	grace, err := time.ParseDuration(offlineGraceStr)
+	if err != nil {
+		grace = 5 * time.Second
+	}
+	handler.SetLiveness(lttl, grace)
+
+	// Subscribe to sensor heartbeat (implicit)
+	dataConsumer := rabbitmq.NewConsumer(client, sensorDataSub, nil)
+	dataConsumer.SetHandler(handler.OnSensorData)
+	go dataConsumer.ConsumeMessage(ctx)
+
+	// ---- gRPC server
 	addr := ":" + grpcPort
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("listen %s: %v", addr, err)
 	}
 	grpcServer := grpc.NewServer()
-	pb.RegisterDeviceServiceServer(
-		grpcServer,
-		device.NewGrpcHandler(publisherFactory, topicTmpl, fields),
-	)
+	pb.RegisterDeviceServiceServer(grpcServer, handler)
 
 	go func() {
-		log.Printf("DeviceService gRPC %s; MQTT exchange '%s'; topics template '%s'",
-			addr, rmqc.Exchange, topicTmpl)
+		log.Printf("DeviceService gRPC %s; StateChange='%s'; Result='%s'; Liveness sub='%s' TTL=%s Grace=%s",
+			addr, stateTopicTmpl, resultTopicTmpl, sensorDataSub, lttl, grace)
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Fatalf("gRPC serve error: %v", err)
 		}
 	}()
 
-	// ---- graceful shutdown ----
+	// ---- graceful shutdown
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 	<-sigc
 	log.Println("shutting down...")
+	grpcServer.GracefulStop()
 	cancel()
 	time.Sleep(300 * time.Millisecond)
 }

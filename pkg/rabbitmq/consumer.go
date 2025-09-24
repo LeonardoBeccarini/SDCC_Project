@@ -15,19 +15,17 @@ type IConsumer[T any] interface {
 
 // Consumer holds the client, topic, and exchange for subscribing to a topic
 type Consumer struct {
-	client   mqtt.Client
-	handler  func(queue string, message mqtt.Message) error
-	topic    string
-	exchange string
+	client  mqtt.Client
+	handler func(queue string, message mqtt.Message) error
+	topic   string
 }
 
 // NewConsumer creates a new Consumer instance using the shared MQTT client and topic
-func NewConsumer(client mqtt.Client, topic string, exchange string, handler func(queue string, message mqtt.Message) error) *Consumer {
+func NewConsumer(client mqtt.Client, topic string, handler func(queue string, message mqtt.Message) error) *Consumer {
 	return &Consumer{
-		client:   client,
-		topic:    topic,
-		exchange: exchange,
-		handler:  handler,
+		client:  client,
+		topic:   topic,
+		handler: handler,
 	}
 }
 
@@ -38,7 +36,8 @@ func (c *Consumer) SetHandler(handler func(queue string, message mqtt.Message) e
 func qosFor(topic string) byte {
 	t := strings.TrimSpace(topic)
 	if strings.HasPrefix(t, "sensor/aggregated") ||
-		strings.HasPrefix(t, "event/irrigationDecision") {
+		strings.HasPrefix(t, "event/irrigationDecision") ||
+		strings.HasPrefix(t, "event/StateChange") {
 		return 1
 	}
 	return 0
@@ -85,12 +84,11 @@ type MultiConsumer struct {
 	handler  func(queue string, message mqtt.Message) error
 }
 
-func NewMultiConsumer(client mqtt.Client, topics []string, exchange string, handler func(queue string, message mqtt.Message) error) *MultiConsumer {
+func NewMultiConsumer(client mqtt.Client, topics []string, handler func(queue string, message mqtt.Message) error) *MultiConsumer {
 	return &MultiConsumer{
-		client:   client,
-		topics:   topics,
-		exchange: exchange,
-		handler:  handler,
+		client:  client,
+		topics:  topics,
+		handler: handler,
 	}
 }
 

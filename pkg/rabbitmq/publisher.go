@@ -17,17 +17,16 @@ type IPublisher interface {
 type Publisher struct {
 	client          mqtt.Client
 	topic           string
-	exchange        string
 	defaultQoS      byte
 	defaultRetained bool
 }
 
-func NewPublisher(client mqtt.Client, topic string, exchange string) *Publisher {
-	return &Publisher{client: client, topic: topic, exchange: exchange, defaultQoS: 0, defaultRetained: false}
+func NewPublisher(client mqtt.Client, topic string) *Publisher {
+	return &Publisher{client: client, topic: topic, defaultQoS: 0, defaultRetained: false}
 }
 
-func NewPublisherWithQoS(client mqtt.Client, topic string, exchange string, qos byte, retained bool) *Publisher {
-	return &Publisher{client: client, topic: topic, exchange: exchange, defaultQoS: qos, defaultRetained: retained}
+func NewPublisherWithQoS(client mqtt.Client, topic string, qos byte, retained bool) *Publisher {
+	return &Publisher{client: client, topic: topic, defaultQoS: qos, defaultRetained: retained}
 }
 
 func (p *Publisher) PublishMessage(message interface{}) error {
