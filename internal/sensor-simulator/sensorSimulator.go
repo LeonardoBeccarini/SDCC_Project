@@ -73,7 +73,7 @@ func (s *SensorSimulator) Start(
 }
 
 // handleMessage expects StateChangeEvent for *this* sensor
-func (s *SensorSimulator) handleMessage(queue string, msg mqtt.Message) error {
+func (s *SensorSimulator) handleMessage(_ string, msg mqtt.Message) error {
 	// Dedup a payload: redelivery QoS1 ha lo stesso payload → stesso hash
 	h := sha256.Sum256(msg.Payload())
 	if s.deduper != nil && !s.deduper.ShouldProcess(hex.EncodeToString(h[:])) {

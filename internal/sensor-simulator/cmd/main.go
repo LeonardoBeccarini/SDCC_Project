@@ -5,9 +5,8 @@ import (
 	"encoding/json"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
 	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
-	sensor_simulator "github.com/LeonardoBeccarini/sdcc_project/internal/sensor-simulator"
+	sensorSimulator "github.com/LeonardoBeccarini/sdcc_project/internal/sensor-simulator"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
-	"io/ioutil"
 	"log"
 	"os"
 	"strconv"
@@ -53,7 +52,7 @@ func main() {
 	}
 
 	// Carica configurazione sensori
-	configBytes, err := ioutil.ReadFile(configPath)
+	configBytes, err := os.ReadFile(configPath)
 	if err != nil {
 		log.Fatalf("Failed to read config file %s: %v", configPath, err)
 	}
@@ -69,7 +68,7 @@ func main() {
 		for i := range arr {
 			if arr[i].ID == sensorID {
 				// model.Sensor è un alias di entities.Sensor, quindi il cast è sicuro
-				s := entities.Sensor(arr[i])
+				s := arr[i]
 				sensor = &s
 				break
 			}
@@ -112,11 +111,11 @@ func main() {
 	consumer := rabbitmq.NewConsumer(client, stateTopic, nil)
 
 	// Generatore: seed UNA SOLA VOLTA da SoilGrids all'avvio; poi gestione interna
-	gen := sensor_simulator.NewDataGenerator(0.001)
+	gen := sensorSimulator.NewDataGenerator(0.001)
 	// Seed iniziale da SoilGrids solo all'avvio
-	gen.SeedFromSoilGrids(ctx, (*model.Sensor)(sensor))
+	gen.SeedFromSoilGrids(ctx, sensor)
 
-	service := sensor_simulator.NewSensorSimulator(consumer, publisher, gen, sensor)
+	service := sensorSimulator.NewSensorSimulator(consumer, publisher, gen, sensor)
 	log.Printf("Sensor Simulator [%s] started for field %s, pub=%s, sub=%s", sensor.ID, sensor.FieldID, pubTopic, stateTopic)
 	service.Start(ctx, interval)
 }

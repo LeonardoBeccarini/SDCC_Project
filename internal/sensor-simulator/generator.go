@@ -47,7 +47,7 @@ func NewDataGenerator(decayPerMin float64) *DataGenerator {
 	}
 }
 
-// SeedFromSoilGrids: singola fetch a SoilGrids all'avvio.
+// SeedFromSoilGrids --> singola fetch a SoilGrids all'avvio.
 // Se fallisce, usa un seed di default (30%).
 func (g *DataGenerator) SeedFromSoilGrids(ctx context.Context, s *model.Sensor) {
 	g.mu.Lock()
@@ -126,33 +126,76 @@ func (g *DataGenerator) ApplyIrrigation(d time.Duration) {
 func (g *DataGenerator) fetchSoilMoisture(ctx context.Context, lat, lon float64) (float64, error) {
 	url := fmt.Sprintf(soilGridsURL, lat, lon)
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+
+	attemptOnce := func() (val float64, retry bool, err error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return -1, true, err
+		}
 		req.Header.Set("User-Agent", "sdcc-sensor-simulator/1.0")
+
 		resp, err := g.httpClient.Do(req)
 		if err != nil {
-			lastErr = err
-		} else {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				var parsed any
-				if err := json.Unmarshal(body, &parsed); err == nil {
-					if m := extractMoistureHeuristic(parsed); m >= 0 {
-						// ✅ normalizza correttamente i valori SoilGrids (es. 420 ⇒ 0.420) e clamp
-						return normalizeWV(m), nil
-					}
-					lastErr = errors.New("soilgrids: campo moisture non trovato")
-				} else {
-					lastErr = err
+			return -1, true, err
+		}
+
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		closeErr := resp.Body.Close()
+
+		// preferiamo il readErr; il closeErr viene propagato se non c'è altro
+		if readErr != nil {
+			if closeErr != nil {
+				// conserva il readErr come principale, ma segnala che c'è stato anche closeErr
+				return -1, true, fmt.Errorf("%w; body close error: %v", readErr, closeErr)
+			}
+			return -1, true, readErr
+		}
+
+		switch {
+		case resp.StatusCode == http.StatusOK:
+			var parsed any
+			if err := json.Unmarshal(body, &parsed); err != nil {
+				if closeErr != nil {
+					return -1, true, fmt.Errorf("%w; body close error: %v", err, closeErr)
 				}
-			} else if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-				lastErr = fmt.Errorf("soilgrids HTTP %d", resp.StatusCode)
-			} else {
-				return -1, fmt.Errorf("soilgrids HTTP %d: %s", resp.StatusCode, string(body))
+				return -1, true, err
+			}
+			if m := extractMoistureHeuristic(parsed); m >= 0 {
+				if closeErr != nil {
+					return -1, false, closeErr
+				}
+				return normalizeWV(m), false, nil
+			}
+			if closeErr != nil {
+				return -1, true, fmt.Errorf("soilgrids: moisture field not found; body close error: %v", closeErr)
+			}
+			return -1, true, errors.New("soilgrids: moisture field not found")
+
+		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+			// retryable
+			if closeErr != nil {
+				return -1, true, fmt.Errorf("soilgrids HTTP %d; body close error: %v", resp.StatusCode, closeErr)
+			}
+			return -1, true, fmt.Errorf("soilgrids HTTP %d", resp.StatusCode)
+
+		default:
+			// non-retryable → ritorno immediato
+			if closeErr != nil {
+				return -1, false, closeErr
+			}
+			return -1, false, fmt.Errorf("soilgrids HTTP %d: %s", resp.StatusCode, string(body))
+		}
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if val, retry, err := attemptOnce(); err == nil {
+			return val, nil
+		} else {
+			lastErr = err
+			if !retry {
+				return -1, lastErr
 			}
 		}
-		// backoff prima del retry
 		if attempt == 0 {
 			time.Sleep(time.Duration(rand.Intn(400)+600) * time.Millisecond)
 		}

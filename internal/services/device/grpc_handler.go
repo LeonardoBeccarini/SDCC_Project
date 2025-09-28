@@ -37,7 +37,6 @@ type GrpcHandler struct {
 	sensorLivenessTTL time.Duration
 	offlineGrace      time.Duration
 	lastSeen          sync.Map // chiave "field|sensor" -> time.Time
-
 }
 
 func NewGrpcHandler(factory PublisherFactory, topicTemplate string, fields map[string]model.Field) *GrpcHandler {
@@ -57,7 +56,7 @@ func (h *GrpcHandler) SetResultTopicTemplate(t string) {
 	}
 }
 
-// setter per liveness (richiamato dal main via ENV)
+// SetLiveness imposta TTL di liveness e finestra di grace (richiamato dal main via ENV).
 func (h *GrpcHandler) SetLiveness(ttl, grace time.Duration) {
 	if ttl > 0 {
 		h.sensorLivenessTTL = ttl
@@ -69,7 +68,7 @@ func (h *GrpcHandler) SetLiveness(ttl, grace time.Duration) {
 
 // ============== RPC: StartIrrigation ==============
 
-func (h *GrpcHandler) StartIrrigation(ctx context.Context, req *pb.StartRequest) (*pb.CommandResponse, error) {
+func (h *GrpcHandler) StartIrrigation(_ context.Context, req *pb.StartRequest) (*pb.CommandResponse, error) {
 	fid, sid := strings.TrimSpace(req.GetFieldId()), strings.TrimSpace(req.GetSensorId())
 
 	// lookup sensore (helper locale: niente dipendenze da metodi non presenti)
@@ -201,7 +200,7 @@ func (h *GrpcHandler) StartIrrigation(ctx context.Context, req *pb.StartRequest)
 
 // ============== RPC: StopIrrigation ==============
 
-func (h *GrpcHandler) StopIrrigation(ctx context.Context, req *pb.StopRequest) (*pb.CommandResponse, error) {
+func (h *GrpcHandler) StopIrrigation(_ context.Context, req *pb.StopRequest) (*pb.CommandResponse, error) {
 	fid, sid := req.GetFieldId(), req.GetSensorId()
 	evt := model.StateChangeEvent{
 		FieldID:   fid,
@@ -219,25 +218,24 @@ func (h *GrpcHandler) StopIrrigation(ctx context.Context, req *pb.StopRequest) (
 }
 
 // ============== Helpers ==============
-// NEW: handler/subscription per heartbeat implicito (sensor/data/+/+)
+
+// OnSensorData aggiorna liveness da heartbeat implicito (sensor/data/+/+).
 func (h *GrpcHandler) OnSensorData(_ string, m mqtt.Message) error {
-	// topic atteso: sensor/data/{field}/{sensor}  (configurabile dal main)
+	// topic atteso: sensor/data/{field}/{sensor} (configurabile dal main)
 	parts := strings.Split(m.Topic(), "/")
 	if len(parts) >= 4 {
 		h.lastSeen.Store(parts[2]+"|"+parts[3], time.Now())
 	}
 	return nil
 }
+
 func (h *GrpcHandler) isLive(fieldID, sensorID string) bool {
-
 	if v, ok := h.lastSeen.Load(fieldID + "|" + sensorID); ok {
-
 		return time.Since(v.(time.Time)) < h.sensorLivenessTTL
-
 	}
-
 	return false
 }
+
 func (h *GrpcHandler) waitGraceAlive(fieldID, sensorID string, grace time.Duration) bool {
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
@@ -248,6 +246,7 @@ func (h *GrpcHandler) waitGraceAlive(fieldID, sensorID string, grace time.Durati
 	}
 	return false
 }
+
 func (h *GrpcHandler) publishResult(evt messages.IrrigationResultEvent) {
 	topic := strings.NewReplacer("{field}", evt.FieldID, "{sensor}", evt.SensorID).
 		Replace(firstNonEmpty(h.resultTopicTmpl, "event/irrigationResult/{field}/{sensor}"))
@@ -285,7 +284,6 @@ func (h *GrpcHandler) lookupSensor(fieldID, sensorID string) (model.Sensor, bool
 	return model.Sensor{}, false
 }
 
-// TODO togli sti metodi helper e centralizzali nel sensore.
 // 1 L/m2 = 1 mm
 func mmPerMinute(s model.Sensor) float64 {
 	if s.AreaM2 <= 0 || s.FlowLpm <= 0 {

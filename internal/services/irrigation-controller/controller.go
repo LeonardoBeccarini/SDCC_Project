@@ -325,6 +325,8 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 
 	// publish decision (invariato)
 	if doseMM <= 0 || durationMin <= 0 {
+		log.Printf("decision-nopublish: %s/%s dose=%.2fmm dur=%d → no MQTT publish (nessuna irrigazione partirà)",
+			fieldID, sensorID, doseMM, durationMin)
 		return nil
 	}
 	return c.publishDecision(fieldID, sensorID, doseMM, float64(durationMin), moist)
@@ -362,7 +364,21 @@ func (c *Controller) handleIrrigationResult(_ string, m mqtt.Message) error {
 	// scala budget solo se OK o FAIL con mm_applied>0
 	if strings.EqualFold(r.Status, "OK") || (strings.EqualFold(r.Status, "FAIL") && applied > 0) {
 		k := key(r.FieldID, r.SensorID)
+
+		// --- LOG PRE: fotografia prima della detrazione ---
+		if remBefore, ok := c.peekRemainingByKey(k); ok {
+			log.Printf("budget-deduct:pre %s day=%s applied=%.2fmm remaining_before=%.2fmm ticket=%s",
+				k, day.Format("2006-01-02"), applied, remBefore, tid)
+		} else {
+			log.Printf("budget-deduct:pre %s day=%s applied=%.2fmm (no remaining snapshot) ticket=%s",
+				day.Format("2006-01-02"), applied, tid)
+		}
 		c.deductBudget(k, day, applied)
+
+		// --- LOG POST: fotografia dopo la detrazione ---
+		if remAfter, ok := c.peekRemainingByKey(k); ok {
+			log.Printf("budget-deduct:post %s day=%s remaining_after=%.2fmm", day.Format("2006-01-02"), remAfter)
+		}
 		log.Printf("controller: result ticket=%s %s → applied=%.2fmm status=%s", tid, k, applied, r.Status)
 	} else {
 		log.Printf("controller: result ticket=%s %s → no scaling (status=%s, mm=%.2f)", tid, key(r.FieldID, r.SensorID), r.Status, applied)
@@ -414,6 +430,15 @@ func (c *Controller) publishDecision(fieldID, sensorID string, doseMM, durMin, S
 
 // ==== helpers (lookup, loadSensors, conversions, math, etc.) ====
 
+// Peek del remaining (read-only) a partire dalla chiave field|sensor.
+// Non modifica la logica: serve solo per log "pre/post".
+func (c *Controller) peekRemainingByKey(k string) (float64, bool) {
+	c.dailyMu.Lock()
+	defer c.dailyMu.Unlock()
+	v, ok := c.dailyRemaining[k]
+	return v, ok
+}
+
 // ensureDailyBudget inizializza (o riapre) il budget giornaliero per il sensore/field
 // alla mezzanotte "dayStart" e restituisce: budget del giorno, consumato e rimanente.
 // Logica: budget = baseMM + etoCoeff * max(0, et0 - rain).
@@ -443,6 +468,9 @@ func (c *Controller) ensureDailyBudget(ctx context.Context, s model.Sensor, dayS
 		c.dailyDay[k] = dayStart
 		c.dailyBudget[k] = budget
 		c.dailyRemaining[k] = budget
+		log.Printf("budget-init: %s/%s day=%s budget=%.2fmm (base=%.2f + etoCoeff=%.2f * max(0, et0=%.2f - rain=%.2f)=%.2f)",
+			s.FieldID, s.ID, dayStart.Format("2006-01-02"),
+			budget, c.baseMM, c.etoCoeff, eto, rain, etoAdj)
 	}
 
 	dayBudget = c.dailyBudget[k]
