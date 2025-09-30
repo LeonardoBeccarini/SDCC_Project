@@ -52,8 +52,8 @@ func buildFlux(bucket string, minutes, limit int) string {
 	return fmt.Sprintf(`
 from(bucket: %q)
   |> range(start: -%dm)
-  |> filter(fn: (r) => r._measurement == "system_event" and r.event_type == "irrigation.decision")
-  |> filter(fn: (r) => r._field == "dose_mm")
+  |> filter(fn: (r) => r._measurement == "system_event" and r.event_type == "irrigation.result")
+  |> filter(fn: (r) => r._field == "mm_applied")
   |> keep(columns: ["_time","_value","sensor_id"])
   |> sort(columns: ["_time"], desc: true)
   |> limit(n:%d)

@@ -12,7 +12,7 @@ import (
 )
 
 type CommonEvent struct {
-	EventType     string // irrigation.decision | device.state_change | irrigation.result
+	EventType     string // device.state_change | irrigation.result
 	SourceService string // irrigation-controller | device-service | ...
 	FieldID       string
 	SensorID      string
@@ -35,8 +35,6 @@ func (h *MQTTHandler) Handle(_ string, m mqtt.Message) error {
 		err error
 	)
 	switch {
-	case strings.HasPrefix(topic, "event/irrigationDecision/"):
-		evt, err = decodeDecision(topic, payload)
 	case strings.HasPrefix(topic, "event/StateChange/"):
 		evt, err = decodeStateChange(topic, payload)
 	case strings.HasPrefix(topic, "event/irrigationResult/"):
@@ -51,31 +49,6 @@ func (h *MQTTHandler) Handle(_ string, m mqtt.Message) error {
 		h.sink(evt)
 	}
 	return nil
-}
-
-func decodeDecision(topic string, payload []byte) (CommonEvent, error) {
-	var d msg.IrrigationDecisionEvent
-	if err := json.Unmarshal(payload, &d); err != nil {
-		return CommonEvent{}, err
-	}
-	fieldID, sensorID := pickIDs(topic, d.FieldID, d.SensorID, "event/irrigationDecision/")
-	if fieldID == "" || sensorID == "" {
-		return CommonEvent{}, errors.New("decision: missing field/sensor")
-	}
-	return CommonEvent{
-		EventType:     "irrigation.decision",
-		SourceService: "irrigation-controller",
-		FieldID:       fieldID,
-		SensorID:      sensorID,
-		Severity:      "info",
-		Fields: map[string]interface{}{
-			"dose_mm":         d.DoseMM,
-			"remaining_today": d.RemainingToday,
-			"dr_pct":          d.DrPct,
-			"smt_pct":         d.SMT,
-		},
-		Timestamp: d.Timestamp,
-	}, nil
 }
 
 func decodeStateChange(topic string, payload []byte) (CommonEvent, error) {

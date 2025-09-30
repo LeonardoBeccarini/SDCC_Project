@@ -12,12 +12,10 @@ import (
 
 // --- Telemetria e messaggi ---
 type (
-	SensorData              = messages.SensorData              // misura suolo (raw/aggregata)
-	StateChangeEvent        = messages.StateChangeEvent        // evento cambio stato sensore
-	IrrigationDecisionEvent = messages.IrrigationDecisionEvent // evento decisione irrigazione
-	IrrigationResultEvent   = messages.IrrigationResultEvent   //evento esito irrigazione
+	SensorData            = messages.SensorData            // misura suolo (raw/aggregata)
+	StateChangeEvent      = messages.StateChangeEvent      // evento cambio stato sensore
+	IrrigationResultEvent = messages.IrrigationResultEvent //evento esito irrigazione
 
-	// Entità/parametri (già presenti)
 	Sensor           = entities.Sensor
 	Field            = entities.Field
 	State            = entities.SensorState // stato del dispositivo (se definito in entities)

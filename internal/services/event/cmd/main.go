@@ -71,7 +71,7 @@ func main() {
 		InfluxBucket: envStr("INFLUX_BUCKET", "events"),
 
 		Topics: func() []string {
-			raw := envStr("EVENT_SUB_TOPICS", "event/irrigationDecision/#,event/StateChange/#")
+			raw := envStr("EVENT_SUB_TOPICS", "event/StateChange/#,event/irrigationResult/#")
 			parts := strings.Split(raw, ",")
 			out := make([]string, 0, len(parts))
 			for _, p := range parts {
@@ -144,21 +144,20 @@ func main() {
 		}
 		log.Printf("event-svc: subscribing to %s", topic)
 
-		// QoS per-topic: 1 solo per irrigationDecision, 0 per gli altri (es. StateChange)
-		qos := byte(0)
-		if strings.HasPrefix(topic, "event/irrigationDecision") {
-			qos = 1
-		}
-
-		if token := mqttClient.Subscribe(topic, qos, func(_ mqtt.Client, m mqtt.Message) {
-			// Dedup *solo* su event/irrigationDecision/# (QoS1 → possibili redelivery)
-			if strings.HasPrefix(m.Topic(), "event/irrigationDecision/") {
-				hh := sha256.Sum256(m.Payload())
-				if !d.ShouldProcess(hex.EncodeToString(hh[:])) {
+		if token := mqttClient.Subscribe(topic, 1, func(_ mqtt.Client, m mqtt.Message) {
+			// Dedup su entrambi i topic QoS1 (irrigationResult, StateChange) → possibili redelivery
+			if strings.HasPrefix(m.Topic(), "event/irrigationResult/") ||
+				strings.HasPrefix(m.Topic(), "event/StateChange/") {
+				// chiave = topic + '\n' + payload (evita collisioni tra topic diversi)
+				keyBytes := append([]byte(m.Topic()), '\n')
+				keyBytes = append(keyBytes, m.Payload()...)
+				sum := sha256.Sum256(keyBytes)
+				if !d.ShouldProcess(hex.EncodeToString(sum[:])) {
 					return
 				}
 			}
 			_ = h.Handle("", m) // logica invariata
+
 		}); token.Wait() && token.Error() != nil {
 			log.Fatalf("subscribe error on %s: %v", topic, token.Error())
 		}

@@ -47,10 +47,8 @@ func main() {
 
 	aggregatedSub := env("AGGREGATED_SUB_TOPIC", "sensor/aggregated/#")
 	resultSub := env("IRRIGATION_RESULT_SUB", "event/irrigationResult/#")
-	decisionTopicTmpl := env("IRRIGATION_DECISION_TOPIC_TMPL", "event/irrigationDecision/{field}/{sensor}")
 
 	consumer := rabbitmq.NewConsumer(mqClient, aggregatedSub, nil)
-	decisionPublisher := rabbitmq.NewPublisher(mqClient, "")
 
 	// OpenWeather client
 	owmKey := env("OWM_API_KEY", "changeme")
@@ -70,12 +68,10 @@ func main() {
 
 	ctrl, err := controller.NewController(
 		consumer,
-		decisionPublisher,
 		router,
 		wc,
 		policyPath,
 		sensorsPath,
-		decisionTopicTmpl,
 	)
 	if err != nil {
 		log.Fatalf("controller init: %v", err)
@@ -85,7 +81,7 @@ func main() {
 	resConsumer := rabbitmq.NewConsumer(mqClient, resultSub, nil)
 	ctrl.AttachResultConsumer(resConsumer)
 
-	log.Printf("IrrigationController running. sub=%s decisions=%s routes=%s resultSub=%s", aggregatedSub, decisionTopicTmpl, mapStr, resultSub)
+	log.Printf("IrrigationController running. sub=%s routes=%s resultSub=%s", aggregatedSub, mapStr, resultSub)
 	ctrl.Start(ctx)
 
 	// graceful shutdown

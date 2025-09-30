@@ -42,10 +42,9 @@ spec:
           env:
             - { name: HOSTNAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
 
-            # Topic (coerenti con main.go)
+            # Topic
             - { name: AGGREGATED_SUB_TOPIC,           value: "sensor/aggregated/#" }
             - { name: IRRIGATION_RESULT_SUB,          value: "event/irrigationResult/#" }
-            - { name: IRRIGATION_DECISION_TOPIC_TMPL, value: "event/irrigationDecision/{field}/{sensor}" }
 
             # Router gRPC per field -> device-service
             - { name: DEVICE_GRPC_ADDR_MAP, value: "field_1=device-svc-field1.edge.svc.cluster.local:50051,field_2=device-svc-field2.edge.svc.cluster.local:50051" }
@@ -57,7 +56,7 @@ spec:
             - { name: MOISTURE_GUARDS,  value: "35" }        # fallback gestito anche via MOISTURE_THRESHOLD_PCT
             - { name: DAILY_BASE_MM,    value: "5.0" }
             - { name: DAILY_ETO_COEFF,  value: "0.5" }
-            - { name: IRR_PENDING_TTL,  value: "5m" }
+            - { name: IRR_PENDING_MARGIN,  value: "5m" }
             - { name: TZ,               value: "Europe/Rome" }
 
             # OpenWeather (da Secret allegata)

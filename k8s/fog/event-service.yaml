@@ -55,9 +55,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            # includo anche la variante minuscola per robustezza
             - name: EVENT_SUB_TOPICS
-              value: "event/irrigationDecision/#,event/StateChange/#"
+              value: "event/StateChange/#,event/irrigationResult/#"
             - name: INFLUX_URL
               value: "http://influxdb-fog.fog.svc:8086"
             - name: INFLUX_ORG

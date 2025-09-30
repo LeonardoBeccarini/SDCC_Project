@@ -28,24 +28,21 @@ const (
 	defaultTZ             = "Europe/Rome"
 	defaultBaseMM         = 5.0  // DAILY_BASE_MM
 	defaultEtoCoefficient = 0.5  // DAILY_ETO_COEFF
-	defaultPendingTTL     = "5m" // IRR_PENDING_TTL
+	defaultPendingMargin  = "5m" // IRR_PENDING_TTL
 )
 
 // ===================== Controller =====================
 
 type Controller struct {
-	consumer  rabbitmq.IConsumer[model.SensorData]
-	publisher rabbitmq.IPublisher
-	router    DeviceRouter
-	wclient   WeatherClient
-	sensors   map[string]map[string]model.Sensor // field -> sensorID -> Sensor
+	consumer rabbitmq.IConsumer[model.SensorData]
+	router   DeviceRouter
+	wclient  WeatherClient
+	sensors  map[string]map[string]model.Sensor // field -> sensorID -> Sensor
 
 	guardLevels []float64 // percentuali, desc
 
 	baseMM   float64
 	etoCoeff float64
-
-	decisionTopicTmpl string
 
 	// anti-doppi ON
 	wateringMu    sync.Mutex
@@ -67,7 +64,7 @@ type Controller struct {
 	resultConsumer rabbitmq.IConsumer[model.IrrigationResultEvent]
 	pending        sync.Map // ticket_id -> pendingEntry
 	processed      sync.Map // ticket_id -> struct{}{}
-	pendingTTL     time.Duration
+	marginTTL      time.Duration
 }
 
 type pendingEntry struct {
@@ -78,7 +75,7 @@ type pendingEntry struct {
 	Deadline   time.Time
 }
 
-// DeviceRouter e WeatherClient: invariati
+// DeviceRouter e WeatherClient:
 type DeviceRouter interface {
 	Get(field string) (pb.DeviceServiceClient, bool)
 	Close()
@@ -87,16 +84,14 @@ type WeatherClient interface {
 	GetDailyET0AndRain(ctx context.Context, lat, lon float64, day time.Time) (etoMM, rainMM float64, err error)
 }
 
-// ===================== ctor =====================
+// ===================== controller =====================
 
 func NewController(
 	c rabbitmq.IConsumer[model.SensorData],
-	p rabbitmq.IPublisher,
 	router DeviceRouter,
 	wc WeatherClient,
 	_ string, // fieldPolicyPath (unused, compat)
 	sensorsPath string,
-	decisionTopicTmpl string,
 ) (*Controller, error) {
 	if router == nil {
 		return nil, errors.New("device router is nil")
@@ -139,25 +134,23 @@ func NewController(
 	etoCoeff := getenvFloat("DAILY_ETO_COEFF", defaultEtoCoefficient)
 
 	// pending TTL
-	pTTL := getenvDuration("IRR_PENDING_TTL", defaultPendingTTL)
+	mTTL := getenvDuration("IRR_PENDING_MARGIN", defaultPendingMargin)
 
 	ctrl := &Controller{
-		consumer:          c,
-		publisher:         p,
-		router:            router,
-		wclient:           wc,
-		sensors:           sensors,
-		guardLevels:       guards,
-		baseMM:            baseMM,
-		etoCoeff:          etoCoeff,
-		decisionTopicTmpl: firstNonEmpty(decisionTopicTmpl, "event/irrigationDecision/{field}/{sensor}"),
-		wateringUntil:     make(map[string]time.Time),
-		tz:                loc,
-		dailyDay:          make(map[string]time.Time),
-		dailyBudget:       make(map[string]float64),
-		dailyRemaining:    make(map[string]float64),
-		deduper:           dedup.New(10*time.Minute, 20000),
-		pendingTTL:        pTTL,
+		consumer:       c,
+		router:         router,
+		wclient:        wc,
+		sensors:        sensors,
+		guardLevels:    guards,
+		baseMM:         baseMM,
+		etoCoeff:       etoCoeff,
+		wateringUntil:  make(map[string]time.Time),
+		tz:             loc,
+		dailyDay:       make(map[string]time.Time),
+		dailyBudget:    make(map[string]float64),
+		dailyRemaining: make(map[string]float64),
+		deduper:        dedup.New(10*time.Minute, 20000),
+		marginTTL:      mTTL,
 	}
 	c.SetHandler(ctrl.handleAggregated)
 	return ctrl, nil
@@ -308,12 +301,23 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 
 			// *** CAMBIO QUI: niente decremento immediato ***
 			if tid := strings.TrimSpace(resp.GetTicketId()); tid != "" {
-				c.pending.Store(tid, pendingEntry{
-					FieldID: fieldID, SensorID: sensorID, DayStart: dayStart,
-					ExpectedMM: doseMM, Deadline: time.Now().Add(c.pendingTTL),
-				})
-				log.Printf("controller: pending add ticket=%s %s/%s expected=%.2fmm ttl=%s",
-					tid, fieldID, sensorID, doseMM, c.pendingTTL)
+				if tid := strings.TrimSpace(resp.GetTicketId()); tid != "" {
+					// TTL per-ticket = durata + margine (pendingTTL)
+					ttlTotal := time.Duration(durationMin)*time.Minute + c.marginTTL
+
+					c.pending.Store(tid, pendingEntry{
+						FieldID:    fieldID,
+						SensorID:   sensorID,
+						DayStart:   dayStart,
+						ExpectedMM: doseMM,
+						Deadline:   time.Now().Add(ttlTotal),
+					})
+					log.Printf("controller: pending add ticket=%s %s/%s expected=%.2fmm ttl=%s (dur=%dm + margin=%s)",
+						tid, fieldID, sensorID, doseMM, ttlTotal, durationMin, c.marginTTL)
+				} else {
+					log.Printf("controller: warning: empty ticket_id from device")
+				}
+
 			} else {
 				log.Printf("controller: warning: empty ticket_id from device")
 			}
@@ -323,13 +327,7 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 		}
 	}
 
-	// publish decision (invariato)
-	if doseMM <= 0 || durationMin <= 0 {
-		log.Printf("decision-nopublish: %s/%s dose=%.2fmm dur=%d → no MQTT publish (nessuna irrigazione partirà)",
-			fieldID, sensorID, doseMM, durationMin)
-		return nil
-	}
-	return c.publishDecision(fieldID, sensorID, doseMM, float64(durationMin), moist)
+	return nil
 }
 
 // ===================== Risultati irrigazione (NUOVO) =====================
@@ -345,43 +343,61 @@ func (c *Controller) handleIrrigationResult(_ string, m mqtt.Message) error {
 		return nil
 	}
 
-	// dedupe su ticket_id
+	k := key(r.FieldID, r.SensorID)
+
+	// dedupe su ticket_id (QoS1)
 	if _, seen := c.processed.LoadOrStore(tid, struct{}{}); seen {
+		log.Printf("result-dup: ticket=%s %s ignored", tid, k)
 		return nil
 	}
 
-	// prendi pending
+	// Prendi (ed elimina) il pending per questo ticket, se c'è
 	var day time.Time
 	if v, ok := c.pending.LoadAndDelete(tid); ok {
 		pe := v.(pendingEntry)
 		day = pe.DayStart
+		log.Printf("pending-del: ticket=%s %s/%s expected=%.2fmm deadline=%s",
+			tid, pe.FieldID, pe.SensorID, pe.ExpectedMM, pe.Deadline.In(c.tz).Format(time.RFC3339))
+		if diff := r.MmApplied - pe.ExpectedMM; math.Abs(diff) > 1e-6 {
+			log.Printf("result-applied!=expected: ticket=%s expected=%.2fmm applied=%.2fmm Δ=%.2fmm",
+				tid, pe.ExpectedMM, r.MmApplied, diff)
+		}
 	} else {
-		// fallback: giorno corrente
+		// pending non trovato (es. timeout/riavvio) → fallback al giorno corrente
 		day = midnightLocal(time.Now(), c.tz)
+		log.Printf("pending-miss: ticket=%s %s using day=%s (no pending found)",
+			tid, k, day.Format("2006-01-02"))
 	}
 
 	applied := r.MmApplied
-	// scala budget solo se OK o FAIL con mm_applied>0
-	if strings.EqualFold(r.Status, "OK") || (strings.EqualFold(r.Status, "FAIL") && applied > 0) {
-		k := key(r.FieldID, r.SensorID)
+	okStatus := strings.EqualFold(r.Status, "OK")
+	failWithWater := strings.EqualFold(r.Status, "FAIL") && applied > 0
 
+	if okStatus || failWithWater {
 		// --- LOG PRE: fotografia prima della detrazione ---
 		if remBefore, ok := c.peekRemainingByKey(k); ok {
 			log.Printf("budget-deduct:pre %s day=%s applied=%.2fmm remaining_before=%.2fmm ticket=%s",
 				k, day.Format("2006-01-02"), applied, remBefore, tid)
 		} else {
 			log.Printf("budget-deduct:pre %s day=%s applied=%.2fmm (no remaining snapshot) ticket=%s",
-				day.Format("2006-01-02"), applied, tid)
+				k, day.Format("2006-01-02"), applied, tid)
 		}
+
+		// Detrazione atomica del budget del giorno
 		c.deductBudget(k, day, applied)
 
 		// --- LOG POST: fotografia dopo la detrazione ---
 		if remAfter, ok := c.peekRemainingByKey(k); ok {
-			log.Printf("budget-deduct:post %s day=%s remaining_after=%.2fmm", day.Format("2006-01-02"), remAfter)
+			log.Printf("budget-deduct:post %s day=%s remaining_after=%.2fmm",
+				k, day.Format("2006-01-02"), remAfter)
 		}
-		log.Printf("controller: result ticket=%s %s → applied=%.2fmm status=%s", tid, k, applied, r.Status)
+
+		log.Printf("result-commit: ticket=%s %s status=%s applied=%.2fmm",
+			tid, k, r.Status, applied)
 	} else {
-		log.Printf("controller: result ticket=%s %s → no scaling (status=%s, mm=%.2f)", tid, key(r.FieldID, r.SensorID), r.Status, applied)
+		// FAIL senza acqua erogata o altri stati → nessuna variazione budget
+		log.Printf("result-rollback: ticket=%s %s status=%s applied=%.2fmm → no budget change",
+			tid, k, r.Status, applied)
 	}
 
 	return nil
@@ -406,26 +422,6 @@ func (c *Controller) gcPending(ctx context.Context) {
 			})
 		}
 	}
-}
-
-// ===================== Publish & utilities =====================
-
-func (c *Controller) publishDecision(fieldID, sensorID string, doseMM, durMin, SMT float64) error {
-	if doseMM <= 0 || durMin <= 0 {
-		return nil
-	}
-	evt := model.IrrigationDecisionEvent{
-		FieldID: fieldID, SensorID: sensorID, Stage: "", DrPct: 0, SMT: SMT,
-		DoseMM: doseMM, RemainingToday: 0, Timestamp: time.Now().UTC(),
-	}
-	b, _ := json.Marshal(evt)
-	topic := strings.NewReplacer("{field}", fieldID, "{sensor}", sensorID).Replace(c.decisionTopicTmpl)
-	if err := c.publisher.PublishToQos(topic, 1, false, string(b)); err != nil {
-		log.Printf("controller: publish decision error: %v", err)
-		return err
-	}
-	log.Printf("decision: %s/%s dose=%.1fmm dur=%.0fmin topic=%s (qos=1)", fieldID, sensorID, doseMM, durMin, topic)
-	return nil
 }
 
 // ==== helpers (lookup, loadSensors, conversions, math, etc.) ====
@@ -646,15 +642,6 @@ func belowAnyGuard(moist float64, guards []float64) bool {
 		}
 	}
 	return false
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // mmPerMinute: 1 L/m2 = 1 mm

@@ -36,7 +36,7 @@ func (c *Consumer) SetHandler(handler func(queue string, message mqtt.Message) e
 func qosFor(topic string) byte {
 	t := strings.TrimSpace(topic)
 	if strings.HasPrefix(t, "sensor/aggregated") ||
-		strings.HasPrefix(t, "event/irrigationDecision") ||
+		strings.HasPrefix(t, "event/irrigationResult") ||
 		strings.HasPrefix(t, "event/StateChange") {
 		return 1
 	}
