@@ -28,7 +28,7 @@ const (
 	defaultTZ             = "Europe/Rome"
 	defaultBaseMM         = 5.0  // DAILY_BASE_MM
 	defaultEtoCoefficient = 0.5  // DAILY_ETO_COEFF
-	defaultPendingMargin  = "5m" // IRR_PENDING_TTL
+	defaultPendingMargin  = "5m" // IRR_PENDING_TTL_MARGIN
 )
 
 // ===================== Controller =====================
@@ -216,7 +216,7 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 	}
 	log.Printf("budget: %s/%s day=%s remaining=%.2fmm", fieldID, sensorID, dayStart.Format("2006-01-02"), rem)
 
-	// LOGICA di decisione invariata
+	// LOGICA di decisione
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	eto, rain, wErr := c.wclient.GetDailyET0AndRain(ctx, sensor.Latitude, sensor.Longitude, time.Now().UTC())
@@ -248,7 +248,7 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 
 	// mm→min
 	durationMin := 0
-	mmPerMin := mmPerMinute(sensor) // <-- helper locale per evitare unresolved
+	mmPerMin := mmPerMinute(sensor)
 	if doseMM > 0 && mmPerMin > 0 {
 		durationMin = int(math.Round(doseMM / mmPerMin))
 		if durationMin <= 0 {
@@ -299,7 +299,7 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 			}
 			c.wateringMu.Unlock()
 
-			// *** CAMBIO QUI: niente decremento immediato ***
+			//niente decremento immediato
 			if tid := strings.TrimSpace(resp.GetTicketId()); tid != "" {
 				if tid := strings.TrimSpace(resp.GetTicketId()); tid != "" {
 					// TTL per-ticket = durata + margine (pendingTTL)
@@ -330,7 +330,7 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 	return nil
 }
 
-// ===================== Risultati irrigazione (NUOVO) =====================
+// ===================== Risultati irrigazione =====================
 
 func (c *Controller) handleIrrigationResult(_ string, m mqtt.Message) error {
 	var r model.IrrigationResultEvent
@@ -427,7 +427,7 @@ func (c *Controller) gcPending(ctx context.Context) {
 // ==== helpers (lookup, loadSensors, conversions, math, etc.) ====
 
 // Peek del remaining (read-only) a partire dalla chiave field|sensor.
-// Non modifica la logica: serve solo per log "pre/post".
+// serve solo per log "pre/post".
 func (c *Controller) peekRemainingByKey(k string) (float64, bool) {
 	c.dailyMu.Lock()
 	defer c.dailyMu.Unlock()
@@ -476,7 +476,6 @@ func (c *Controller) ensureDailyBudget(ctx context.Context, s model.Sensor, dayS
 }
 
 // deductBudget scala in modo atomico il budget rimanente del giorno per (field|sensor).
-// Non scende sotto zero e non modifica la logica esistente del controller.
 func (c *Controller) deductBudget(key string, dayStart time.Time, mm float64) {
 	if mm <= 0 {
 		return

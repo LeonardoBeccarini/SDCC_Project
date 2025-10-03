@@ -22,11 +22,11 @@ type Publisher struct {
 }
 
 func NewPublisher(client mqtt.Client, topic string) *Publisher {
-	return &Publisher{client: client, topic: topic, defaultQoS: 0, defaultRetained: false}
-}
-
-func NewPublisherWithQoS(client mqtt.Client, topic string, qos byte, retained bool) *Publisher {
-	return &Publisher{client: client, topic: topic, defaultQoS: qos, defaultRetained: retained}
+	return &Publisher{
+		client:          client,
+		topic:           topic,
+		defaultQoS:      0,
+		defaultRetained: false}
 }
 
 func (p *Publisher) PublishMessage(message interface{}) error {

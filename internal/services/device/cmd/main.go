@@ -86,7 +86,7 @@ func main() {
 		log.Fatalf("MQTT connect error: %v", err)
 	}
 
-	// Publisher factory (fits device.GrpcHandler expectation)
+	// Publisher factory
 	publisherFactory := func(topic string) rabbitmq.IPublisher {
 		return rabbitmq.NewPublisher(client, topic)
 	}

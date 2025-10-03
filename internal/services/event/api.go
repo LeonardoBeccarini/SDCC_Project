@@ -74,7 +74,10 @@ func runIrr(w http.ResponseWriter, r *http.Request, influx influxdb2.Client, org
 		_, _ = w.Write([]byte("[]"))
 		return
 	}
-	defer res.Close()
+	defer func() {
+		if cerr := res.Close(); cerr != nil {
+		}
+	}()
 
 	out := make([]Irrigation, 0, p.Limit)
 	for res.Next() {

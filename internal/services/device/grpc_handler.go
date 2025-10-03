@@ -30,7 +30,7 @@ type GrpcHandler struct {
 	// template topic per StateChange (già usato)
 	topicTemplate string // es. "event/StateChange/{field}/{sensor}"
 
-	// NEW: template Result
+	//template Result
 	resultTopicTmpl string // "event/irrigationResult/{field}/{sensor}"
 
 	//liveness (heartbeat implicito da sensor/data)
@@ -71,13 +71,13 @@ func (h *GrpcHandler) SetLiveness(ttl, grace time.Duration) {
 func (h *GrpcHandler) StartIrrigation(_ context.Context, req *pb.StartRequest) (*pb.CommandResponse, error) {
 	fid, sid := strings.TrimSpace(req.GetFieldId()), strings.TrimSpace(req.GetSensorId())
 
-	// lookup sensore (helper locale: niente dipendenze da metodi non presenti)
+	// lookup sensore (helper locale)
 	sensor, ok := h.lookupSensor(fid, sid)
 	if !ok {
 		return &pb.CommandResponse{Success: false, Message: fmt.Sprintf("unknown field/sensor %s/%s", fid, sid)}, nil
 	}
 
-	// calcolo duration coerente con codice attuale
+	// calcolo duration
 	var durMin int32
 	switch {
 	case req.GetDurationMin() > 0:
@@ -95,7 +95,7 @@ func (h *GrpcHandler) StartIrrigation(_ context.Context, req *pb.StartRequest) (
 		durMin = 1
 	}
 
-	// 1) publish StateChange ON (logica invariata)
+	// 1) publish StateChange ON
 	stateEvt := model.StateChangeEvent{
 		FieldID:   fid,
 		SensorID:  sid,
@@ -117,7 +117,7 @@ func (h *GrpcHandler) StartIrrigation(_ context.Context, req *pb.StartRequest) (
 
 	mmPerMin := mmPerMinute(sensor)
 	if mmPerMin <= 0 {
-		mmPerMin = 10.0 / 60.0 // fallback coerente col calcolo durata
+		mmPerMin = 10.0 / 60.0 // fallback
 	}
 
 	go func(fieldID, sensorID, decisionID, ticketID string, tot time.Duration) {

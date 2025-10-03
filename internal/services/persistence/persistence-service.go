@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	// ⬇️ AGGIUNTE per dedup QoS1
+	//per dedup QoS1
 	"crypto/sha256"
 	"encoding/hex"
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/dedup"
@@ -134,7 +134,10 @@ func (s *Service) QueryLatestFromInflux(ctx context.Context, minutes int) ([]mod
 	if err != nil {
 		return nil, err
 	}
-	defer res.Close()
+	defer func() {
+		if cerr := res.Close(); cerr != nil {
+		}
+	}()
 
 	out := make([]model.SensorData, 0, 64)
 	for res.Next() {

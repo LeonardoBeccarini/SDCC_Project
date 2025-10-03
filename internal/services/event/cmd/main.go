@@ -112,7 +112,7 @@ func main() {
 	mux.Handle("/healthz", event.NewHealthHandler(mqttClient, influx, writer))
 	mux.Handle("/readyz", event.NewReadyHandler(mqttClient, influx, writer, 2*time.Second))
 
-	// Rotta che IL GATEWAY sta chiamando oggi:
+	// Rotta che IL GATEWAY sta chiamando:
 	// GET /events/irrigation/latest?limit=20[&minutes=1440]
 	mux.Handle("/events/irrigation/latest", event.NewIrrigationLatestHandler(influx, cfg.InfluxOrg, cfg.InfluxBucket))
 
@@ -135,7 +135,7 @@ func main() {
 		writer.MarkIngest(evt.EventType)
 	})
 
-	// deduper condiviso SOLO per event/irrigationDecision/#
+	// deduper condiviso
 	d := dedup.New(10*time.Minute, 20000)
 
 	for _, topic := range cfg.Topics {
@@ -145,7 +145,7 @@ func main() {
 		log.Printf("event-svc: subscribing to %s", topic)
 
 		if token := mqttClient.Subscribe(topic, 1, func(_ mqtt.Client, m mqtt.Message) {
-			// Dedup su entrambi i topic QoS1 (irrigationResult, StateChange) → possibili redelivery
+			// Dedup su entrambi i topic QoS1 (irrigationResult, StateChange) evita possibili redelivery
 			if strings.HasPrefix(m.Topic(), "event/irrigationResult/") ||
 				strings.HasPrefix(m.Topic(), "event/StateChange/") {
 				// chiave = topic + '\n' + payload (evita collisioni tra topic diversi)
@@ -156,7 +156,7 @@ func main() {
 					return
 				}
 			}
-			_ = h.Handle("", m) // logica invariata
+			_ = h.Handle("", m)
 
 		}); token.Wait() && token.Error() != nil {
 			log.Fatalf("subscribe error on %s: %v", topic, token.Error())

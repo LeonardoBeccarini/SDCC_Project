@@ -6,16 +6,15 @@ import (
 	"strconv"
 )
 
-// ---------- Upstream payloads (tolleranti a leggere differenze di schema)
+// ---------- Upstream payloads ----------
 
 type PersistenceLatest struct {
 	SensorID   string `json:"sensor_id"`
 	Moisture   int    `json:"moisture"`
 	Aggregated bool   `json:"aggregated"`
-	Time       string `json:"time"` // RFC3339 (accettiamo anche "timestamp")
+	Time       string `json:"time"` // RFC3339
 }
 
-// Accetta sia {"time": "..."} sia {"timestamp": "..."} e moisture come int/float/string
 func (p *PersistenceLatest) UnmarshalJSON(b []byte) error {
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
@@ -60,7 +59,6 @@ type Irrigation struct {
 	Time     string `json:"time"`   // RFC3339
 }
 
-// Accetta sia {"amount": ...} sia {"amount_mm": ...}, numeri float/int/string.
 func (i *Irrigation) UnmarshalJSON(b []byte) error {
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {

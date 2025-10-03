@@ -3,6 +3,7 @@ package irrigation_controller
 import (
 	"context"
 	"fmt"
+	"google.golang.org/grpc/connectivity"
 	"strings"
 	"sync"
 	"time"
@@ -42,22 +43,46 @@ func NewDeviceRouter(ctx context.Context, mapStr string) (DeviceRouter, error) {
 		field, addr := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
 
 		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		// Dial bloccante *senza* WithBlock (deprecato): usiamo il timeout + ritorno errore
-		conn, err := grpc.DialContext(
-			dctx,
+
+		// Crea la connessione (non bloccante)
+		conn, err := grpc.NewClient(
 			addr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithReturnConnectionError(),
 		)
-		cancel()
 		if err != nil {
-			return nil, fmt.Errorf("dial %s (%s): %w", field, addr, err)
+			cancel()
+			return nil, fmt.Errorf("new client %s (%s): %w", field, addr, err)
 		}
 
+		// Avvia il tentativo di connessione
+		conn.Connect()
+
+		// attendi Ready entro 5s
+		for {
+			st := conn.GetState()
+			if st == connectivity.Ready {
+				break
+			}
+			// attende un cambio di stato o il timeout del contesto
+			if !conn.WaitForStateChange(dctx, st) {
+				_ = conn.Close()
+				if err := dctx.Err(); err != nil {
+					cancel()
+					return nil, fmt.Errorf("connect %s (%s): %w", field, addr, err)
+				}
+				cancel()
+				return nil, fmt.Errorf("connect %s (%s): context done", field, addr)
+			}
+		}
+
+		// successo: registra client e connessione
 		dr.mu.Lock()
 		dr.conns[field] = conn
 		dr.clis[field] = pb.NewDeviceServiceClient(conn)
 		dr.mu.Unlock()
+
+		// cleanup della iterazione
+		cancel()
 	}
 	return dr, nil
 }
