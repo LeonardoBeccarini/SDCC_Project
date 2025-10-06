@@ -26,9 +26,10 @@ import (
 
 const (
 	defaultTZ             = "Europe/Rome"
-	defaultBaseMM         = 5.0  // DAILY_BASE_MM
-	defaultEtoCoefficient = 0.5  // DAILY_ETO_COEFF
-	defaultPendingMargin  = "5m" // IRR_PENDING_TTL_MARGIN
+	defaultBaseMM         = 5.0   // DAILY_BASE_MM
+	defaultEtoCoefficient = 0.5   // DAILY_ETO_COEFF
+	defaultPendingMargin  = "5m"  // IRR_PENDING_TTL_MARGIN
+	defaultDeduperTTL     = "10m" // DEDUP_TTL
 )
 
 // ===================== Controller =====================
@@ -60,10 +61,9 @@ type Controller struct {
 	// dedup input (aggregated)
 	deduper *dedup.Deduper
 
-	// ==== NUOVO: gestione Result ====
+	// ==== gestione Result ====
 	resultConsumer rabbitmq.IConsumer[model.IrrigationResultEvent]
 	pending        sync.Map // ticket_id -> pendingEntry
-	processed      sync.Map // ticket_id -> struct{}{}
 	marginTTL      time.Duration
 }
 
@@ -133,6 +133,9 @@ func NewController(
 	baseMM := getenvFloat("DAILY_BASE_MM", defaultBaseMM)
 	etoCoeff := getenvFloat("DAILY_ETO_COEFF", defaultEtoCoefficient)
 
+	//deduper TTL
+	dTTL := getenvDuration("DEDUPER_TTL", defaultDeduperTTL)
+
 	// pending TTL
 	mTTL := getenvDuration("IRR_PENDING_MARGIN", defaultPendingMargin)
 
@@ -149,8 +152,8 @@ func NewController(
 		dailyDay:       make(map[string]time.Time),
 		dailyBudget:    make(map[string]float64),
 		dailyRemaining: make(map[string]float64),
-		deduper:        dedup.New(10*time.Minute, 20000),
-		marginTTL:      mTTL,
+		deduper:        dedup.New(dTTL, 20000),
+		marginTTL:      mTTL, // margine da aggiungere alla durata dell'irrigazione prima di decurtare il budget
 	}
 	c.SetHandler(ctrl.handleAggregated)
 	return ctrl, nil
@@ -234,8 +237,10 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 		etoAdj := math.Max(0, eto-rain)
 		doseMM = base + 0.5*etoAdj
 		preDose = doseMM
-		log.Printf("decision-calc: %s/%s moist=%.1f%% < guards=%v → base=%.1f + 0.5*(%.2f-%.2f)=%.2f → preDose=%.2fmm",
-			fieldID, sensorID, moist, c.guardLevels, base, eto, rain, etoAdj, preDose)
+		etoTerm := 0.5 * etoAdj // solo per log
+		log.Printf("decision-calc: %s/%s moist=%.1f%% < guards=%v → base=%.1f + 0.5*max(0, %.2f-%.2f)=%.2f → preDose=%.2fmm",
+			fieldID, sensorID, moist, c.guardLevels, base, eto, rain, etoTerm, preDose)
+
 	} else {
 		log.Printf("decision-skip: %s/%s moist=%.1f%% >= guards=%v → no irrigation", fieldID, sensorID, moist, c.guardLevels)
 	}
@@ -299,25 +304,22 @@ func (c *Controller) handleAggregated(_ string, msg mqtt.Message) error {
 			}
 			c.wateringMu.Unlock()
 
-			//niente decremento immediato
-			if tid := strings.TrimSpace(resp.GetTicketId()); tid != "" {
-				if tid := strings.TrimSpace(resp.GetTicketId()); tid != "" {
-					// TTL per-ticket = durata + margine (pendingTTL)
-					ttlTotal := time.Duration(durationMin)*time.Minute + c.marginTTL
+			// niente decremento immediato
+			tid := strings.TrimSpace(resp.GetTicketId())
+			if tid != "" {
+				// TTL per-ticket = durata + margine
+				ttlTotal := time.Duration(durationMin)*time.Minute + c.marginTTL
 
-					c.pending.Store(tid, pendingEntry{
-						FieldID:    fieldID,
-						SensorID:   sensorID,
-						DayStart:   dayStart,
-						ExpectedMM: doseMM,
-						Deadline:   time.Now().Add(ttlTotal),
-					})
-					log.Printf("controller: pending add ticket=%s %s/%s expected=%.2fmm ttl=%s (dur=%dm + margin=%s)",
-						tid, fieldID, sensorID, doseMM, ttlTotal, durationMin, c.marginTTL)
-				} else {
-					log.Printf("controller: warning: empty ticket_id from device")
-				}
+				c.pending.Store(tid, pendingEntry{
+					FieldID:    fieldID,
+					SensorID:   sensorID,
+					DayStart:   dayStart,
+					ExpectedMM: doseMM,
+					Deadline:   time.Now().Add(ttlTotal),
+				})
 
+				log.Printf("controller: pending add ticket=%s %s/%s expected=%.2fmm ttl=%s (dur=%dm + margin=%s)",
+					tid, fieldID, sensorID, doseMM, ttlTotal, durationMin, c.marginTTL)
 			} else {
 				log.Printf("controller: warning: empty ticket_id from device")
 			}
@@ -346,8 +348,8 @@ func (c *Controller) handleIrrigationResult(_ string, m mqtt.Message) error {
 	k := key(r.FieldID, r.SensorID)
 
 	// dedupe su ticket_id (QoS1)
-	if _, seen := c.processed.LoadOrStore(tid, struct{}{}); seen {
-		log.Printf("result-dup: ticket=%s %s ignored", tid, k)
+	if c.deduper != nil && !c.deduper.ShouldProcess(tid) {
+		log.Printf("result-dup: ticket=%s %s ignored (TTL)", tid, k)
 		return nil
 	}
 
@@ -464,9 +466,11 @@ func (c *Controller) ensureDailyBudget(ctx context.Context, s model.Sensor, dayS
 		c.dailyDay[k] = dayStart
 		c.dailyBudget[k] = budget
 		c.dailyRemaining[k] = budget
-		log.Printf("budget-init: %s/%s day=%s budget=%.2fmm (base=%.2f + etoCoeff=%.2f * max(0, et0=%.2f - rain=%.2f)=%.2f)",
+		etoTerm := c.etoCoeff * etoAdj // solo per log
+		log.Printf("budget-init: %s/%s day=%s budget=%.2fmm (base=%.2f + %.2f*max(0, et0=%.2f - rain=%.2f)=%.2f)",
 			s.FieldID, s.ID, dayStart.Format("2006-01-02"),
-			budget, c.baseMM, c.etoCoeff, eto, rain, etoAdj)
+			budget, c.baseMM, c.etoCoeff, eto, rain, etoTerm)
+
 	}
 
 	dayBudget = c.dailyBudget[k]

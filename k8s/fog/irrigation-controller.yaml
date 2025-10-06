@@ -49,14 +49,15 @@ spec:
             # Router gRPC per field -> device-service
             - { name: DEVICE_GRPC_ADDR_MAP, value: "field_1=device-svc-field1.edge.svc.cluster.local:50051,field_2=device-svc-field2.edge.svc.cluster.local:50051" }
 
-            # Config sensori (obbligatoria)
+            # Config sensori
             - { name: SENSORS_CONFIG_PATH, value: "/app/config/sensors-config.json" }
 
-            # Parametri irrigazione (opzionali, ma utili)
-            - { name: MOISTURE_GUARDS,  value: "35" }        # fallback gestito anche via MOISTURE_THRESHOLD_PCT
+            # Parametri irrigazione
+            - { name: MOISTURE_GUARDS,  value: "35" }
             - { name: DAILY_BASE_MM,    value: "5.0" }
             - { name: DAILY_ETO_COEFF,  value: "0.5" }
             - { name: IRR_PENDING_MARGIN,  value: "5m" }
+            - {name: DEDUPER_TTL, value: "60m"}
             - { name: TZ,               value: "Europe/Rome" }
 
             # OpenWeather (da Secret allegata)
