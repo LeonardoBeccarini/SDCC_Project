@@ -123,10 +123,6 @@ fi
 # Mostra l'URL estratto
 echo "URL estratto: $URL"
 
-# Aggiornamento della configurazione su Elastic Beanstalk
-#aws elasticbeanstalk update-en vironment --environment-name sdcc-gateway-env --option-settings "Namespace=aws:elasticbeanstalk:application:environment,OptionName=EVENT_URL,Value=$URL"
-# Messaggio di conferma
-echo "Configurazione aggiornata su AWS Elastic Beanstalk con l'URL: $URL."
 
 echo "Done."
 

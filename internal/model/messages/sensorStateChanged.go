@@ -1,11 +1,12 @@
 package messages
 
 import (
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
 	"time"
+
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model/entities"
 )
 
-// StateChangeEvent is emitted when a sensor needs a new irrigation state.
+// StateChangeEvent per cambio di stato del sensore
 type StateChangeEvent struct {
 	FieldID   string               `json:"field_id"`
 	SensorID  string               `json:"sensor_id"`

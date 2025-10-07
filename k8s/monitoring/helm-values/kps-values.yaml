@@ -18,9 +18,3 @@ prometheus:
     serviceMonitorNamespaceSelector: {}
     podMonitorNamespaceSelector: {}
     probeNamespaceSelector: {}
-    # storageSpec:            # (opzionale: persistenza)
-    #   volumeClaimTemplate:
-    #     spec:
-    #       resources:
-    #         requests:
-    #           storage: 20Gi

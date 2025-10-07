@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: edge-latency
+  namespace: monitoring
+spec:
+  jobName: blackbox-edge
+  module: tcp_connect
+  prober:
+    url: blackbox-prometheus-blackbox-exporter.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      static:
+        - aggregator-1.edge.svc.cluster.local:8080
+        - aggregator-2.edge.svc.cluster.local:8080

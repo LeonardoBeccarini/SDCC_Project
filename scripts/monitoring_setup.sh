@@ -185,4 +185,6 @@ else
   echo "Setup finito. Per vedere Prometheus:"
   echo "  kubectl -n $NS_OP port-forward svc/kube-prometheus-stack-prometheus $PROM_PORT:9090"
 fi
+kubectl -n monitoring apply -f k8s/monitoring/manifests/probes/probe-fog.yaml
+kubectl -n monitoring apply -f k8s/monitoring/manifests/probes/probe-edge.yaml
 

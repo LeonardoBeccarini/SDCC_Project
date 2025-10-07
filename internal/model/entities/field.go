@@ -1,12 +1,11 @@
 package entities
 
-// Field represents a tract of land growing a particular crop,
-// and contains one or more sensors.
+// Field rappresenta un pezzo di terra dove è coltivata una determinata coltura e contiene 1+ sensori.
 type Field struct {
-	ID       string   `json:"id"`              // unique field identifier
+	ID       string   `json:"id"`
 	CropType string   `json:"crop_type"`       // e.g. "corn", "wheat"
-	Stage    Stage    `json:"stage,omitempty"` // current phenological stage (optional)
-	Sensors  []Sensor `json:"sensors"`         // all sensors in this field
+	Stage    Stage    `json:"stage,omitempty"` // ciclo sviluppo di una pianta
+	Sensors  []Sensor `json:"sensors"`
 }
 
 func (f *Field) GetSensor(sensorID string) *Sensor {

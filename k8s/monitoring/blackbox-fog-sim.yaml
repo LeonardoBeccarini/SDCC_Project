@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blackbox-fog-sim
+  namespace: fog
+  labels:
+    app.kubernetes.io/name: blackbox-fog-sim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: blackbox-fog-sim
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: blackbox-fog-sim
+    spec:
+      #   role: fog
+      initContainers:
+        - name: netem
+          image: alpine:3.20
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          env:
+            - name: DELAY
+              value: "20ms"
+            - name: JITTER
+              value: "6ms"
+          command: ["sh","-c"]
+          args:
+            - >
+              apk add --no-cache iproute2 &&
+              tc qdisc del dev eth0 root 2>/dev/null || true &&
+              tc qdisc add dev eth0 root netem delay ${DELAY} ${JITTER} distribution normal &&
+              tc qdisc show dev eth0
+      containers:
+        - name: blackbox
+          image: quay.io/prometheus/blackbox-exporter:v0.27.0
+          args: ["--config.file=/config/blackbox.yaml"]
+          ports:
+            - name: http
+              containerPort: 9115
+          volumeMounts:
+            - name: cfg
+              mountPath: /config
+      volumes:
+        - name: cfg
+          configMap:
+            name: blackbox-fog-sim-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blackbox-fog-sim
+  namespace: fog
+  labels:
+    app.kubernetes.io/name: blackbox-fog-sim
+spec:
+  selector:
+    app.kubernetes.io/name: blackbox-fog-sim
+  ports:
+    - name: http
+      port: 9115
+      targetPort: 9115
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blackbox-fog-sim-config
+  namespace: fog
+data:
+  blackbox.yaml: |
+    modules:
+      tcp_connect:
+        prober: tcp
+        timeout: 5s

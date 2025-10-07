@@ -1,4 +1,3 @@
-// internal/services/device/cmd/main.go
 package main
 
 import (
@@ -128,7 +127,6 @@ func main() {
 		}
 	}()
 
-	// ---- graceful shutdown
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 	<-sigc

@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-// this will hold both real-time and aggregated data.
+// mantiene sia i dati in tempo reale che quelli aggregati.
 type SensorData struct {
 	FieldID    string    `json:"field_id"`
 	SensorID   string    `json:"sensor_id"`

@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: fog-to-cloud-latency
+  namespace: monitoring
+spec:
+  jobName: blackbox-fog-to-cloud
+  module: tcp_connect
+  prober:
+    url: blackbox-fog.fog.svc.cluster.local:9115   # <— prober che gira nel fog
+    path: /probe
+  targets:
+    staticConfig:
+      static:
+        - gateway.cloud.svc.cluster.local:5009
+        - persistence.cloud.svc.cluster.local:8080

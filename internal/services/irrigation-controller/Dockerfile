@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 ########################
 # 🔨 Builder
 ########################
@@ -39,7 +37,6 @@ COPY internal /src/internal
 COPY pkg      /src/pkg
 COPY grpc     /src/grpc
 
-# 💡 Rigenera *sempre* i file gRPC nel percorso voluto
 RUN mkdir -p grpc/gen/go/irrigation && \
     protoc -I grpc/proto \
       --go_out=grpc/gen/go/irrigation --go_opt=paths=source_relative \

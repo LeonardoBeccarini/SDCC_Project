@@ -3,24 +3,22 @@ package rabbitmq
 import (
 	"context"
 	"fmt"
-	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"strings"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-// IConsumer interface defines the ConsumeMessage method with dependencies T
 type IConsumer[T any] interface {
 	ConsumeMessage(ctx context.Context)
 	SetHandler(handler func(queue string, message mqtt.Message) error)
 }
 
-// Consumer holds the client, topic, and exchange for subscribing to a topic
 type Consumer struct {
 	client  mqtt.Client
 	handler func(queue string, message mqtt.Message) error
 	topic   string
 }
 
-// NewConsumer creates a new Consumer instance using the shared MQTT client and topic
 func NewConsumer(client mqtt.Client, topic string, handler func(queue string, message mqtt.Message) error) *Consumer {
 	return &Consumer{
 		client:  client,
@@ -43,8 +41,7 @@ func qosFor(topic string) byte {
 	return 0
 }
 
-// ConsumeMessage subscribes to the topic and processes messages using the handler
-// It blocks until the context is cancelled.
+// ConsumeMessage prevede iscrizione al topic e consumo del messaggio
 func (c *Consumer) ConsumeMessage(ctx context.Context) {
 	token := c.client.Subscribe(
 		c.topic,
@@ -68,10 +65,8 @@ func (c *Consumer) ConsumeMessage(ctx context.Context) {
 
 	fmt.Printf("Successfully subscribed to topic %s\n", c.topic)
 
-	// Block here until context is done
 	<-ctx.Done()
 
-	// Unsubscribe when exiting to clean up
 	unsubToken := c.client.Unsubscribe(c.topic)
 	unsubToken.Wait()
 }
@@ -98,7 +93,7 @@ func (m *MultiConsumer) SetHandler(handler func(queue string, message mqtt.Messa
 
 func (m *MultiConsumer) ConsumeMessage(ctx context.Context) {
 	for _, topic := range m.topics {
-		topic := topic // shadow for closure safety
+		topic := topic
 		token := m.client.Subscribe(
 			topic,
 			qosFor(topic),

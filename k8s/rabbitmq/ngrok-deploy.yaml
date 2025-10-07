@@ -12,7 +12,6 @@ spec:
       containers:
         - name: ngrok
           image: ngrok/ngrok:latest
-          # usa config file (crea il tunnel "mqtt")
           args: ["start","--all","--config","/etc/ngrok/ngrok.yml"]
           env:
             - name: NGROK_AUTHTOKEN

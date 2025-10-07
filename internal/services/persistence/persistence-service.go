@@ -12,6 +12,7 @@ import (
 	//per dedup QoS1
 	"crypto/sha256"
 	"encoding/hex"
+
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/dedup"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -40,7 +41,7 @@ type Service struct {
 	mu     sync.RWMutex
 	latest map[string]model.SensorData // cache: key = field_id/sensor_id
 
-	// ⬇️ NUOVO: deduper per scartare redelivery QoS1
+	//deduper per scartare redelivery QoS1
 	deduper *dedup.Deduper
 }
 
@@ -70,7 +71,7 @@ func keyOf(fieldID, sensorID string) string { return fieldID + "/" + sensorID }
 
 // Handler dei messaggi MQTT (aggregati) -> scrive su Influx + aggiorna cache
 func (s *Service) handleMessage(_ string, msg mqtt.Message) error {
-	// ⬇️ DEDUP PRIMA DI UNMARSHAL: scarta redelivery QoS1 identiche
+	// DEDUP PRIMA DI UNMARSHAL: scarta redelivery QoS1 identiche
 	h := sha256.Sum256(msg.Payload())
 	if s.deduper != nil && !s.deduper.ShouldProcess(hex.EncodeToString(h[:])) {
 		return nil

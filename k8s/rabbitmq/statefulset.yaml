@@ -38,7 +38,6 @@ spec:
                 secretKeyRef:
                   name: rabbitmq-default-userpass
                   key: RABBITMQ_DEFAULT_PASS
-            # 👉 indica a RabbitMQ dove si trova il file dei plugin dentro la dir montata
             - name: RABBITMQ_ENABLED_PLUGINS_FILE
               value: /etc/rabbitmq/enabled_plugins/enabled_plugins
           ports:
@@ -48,7 +47,7 @@ spec:
               containerPort: 15672
             - name: mqtt
               containerPort: 1883
-            - name: metrics   # 👉 Prometheus (rabbitmq_prometheus)
+            - name: metrics
               containerPort: 15692
           resources:
             requests:
@@ -72,7 +71,7 @@ spec:
               mountPath: /etc/rabbitmq
             - name: data
               mountPath: /var/lib/rabbitmq
-            # 👉 montiamo la ConfigMap come DIRECTORY (niente subPath!)
+
             - name: enabled-plugins
               mountPath: /etc/rabbitmq/enabled_plugins
               readOnly: true
@@ -80,10 +79,10 @@ spec:
         - name: rabbitmq-config
           configMap:
             name: rabbitmq-config
-        # 👉 volume che porta dentro il file enabled_plugins
+
         - name: enabled-plugins
           configMap:
-            name: rabbitmq-enabled-plugins    # DA MODIFICARE QUESTO PER NON FARLO BLOCCARE PIÙ
+            name: rabbitmq-enabled-plugins
             items:
               - key: enabled_plugins
                 path: enabled_plugins

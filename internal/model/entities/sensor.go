@@ -1,6 +1,6 @@
 package entities
 
-// SensorState indicates whether the irrigation valve is on or off.
+// SensorState indica se un sensore sta irrigando o meno
 type SensorState string
 
 const (
@@ -8,10 +8,10 @@ const (
 	StateOn  SensorState = "on"
 )
 
-// Sensor represents a single device in the field.
+// Sensor è il singolo device nel Field
 type Sensor struct {
 	FieldID   string      `json:"field_id"`
-	ID        string      `json:"id"` // unique sensor identifier
+	ID        string      `json:"id"`
 	Longitude float64     `json:"longitude"`
 	Latitude  float64     `json:"latitude"`
 	MaxDepth  int         `json:"max_depth"`

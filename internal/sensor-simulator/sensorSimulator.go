@@ -6,11 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
-	"github.com/LeonardoBeccarini/sdcc_project/pkg/dedup"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/LeonardoBeccarini/sdcc_project/internal/model"
+	"github.com/LeonardoBeccarini/sdcc_project/pkg/dedup"
 
 	"github.com/LeonardoBeccarini/sdcc_project/pkg/rabbitmq"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -18,15 +19,14 @@ import (
 
 type SensorSimulator struct {
 	mu        sync.Mutex
-	sensor    *model.Sensor // only one sensor here
-	timer     *time.Timer   // single timer
+	sensor    *model.Sensor
+	timer     *time.Timer // single timer
 	generator *DataGenerator
 	publisher rabbitmq.IPublisher
 	consumer  rabbitmq.IConsumer[mqtt.Message]
 	deduper   *dedup.Deduper
 }
 
-// NewSensorSimulator takes exactly one Sensor entity
 func NewSensorSimulator(consumer rabbitmq.IConsumer[mqtt.Message], publisher rabbitmq.IPublisher,
 	gen *DataGenerator, sensor *model.Sensor) *SensorSimulator {
 	return &SensorSimulator{
@@ -38,17 +38,15 @@ func NewSensorSimulator(consumer rabbitmq.IConsumer[mqtt.Message], publisher rab
 	}
 }
 
-// Start wires up the consumer and begins both consuming state‐changes
-// and publishing SensorData every interval.
+// Start avvia il simulatore,avvia ricezione dei cambiamenti di stato e pubblicazione dei dati a intervalli regolari.
 func (s *SensorSimulator) Start(
 	ctx context.Context,
 	interval time.Duration,
 ) {
-	// 1) State‐change consumption
+	// State‐change
 	s.consumer.SetHandler(s.handleMessage)
 	go s.consumer.ConsumeMessage(ctx)
 
-	// 2) Publish loop
 	for {
 		select {
 		case <-ctx.Done():
@@ -72,7 +70,6 @@ func (s *SensorSimulator) Start(
 	}
 }
 
-// handleMessage expects StateChangeEvent for *this* sensor
 func (s *SensorSimulator) handleMessage(_ string, msg mqtt.Message) error {
 	// Dedup a payload: redelivery QoS1 ha lo stesso payload → stesso hash
 	h := sha256.Sum256(msg.Payload())
@@ -99,12 +96,10 @@ func (s *SensorSimulator) applyTimedState(evt model.StateChangeEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// cancel prior timer if running
 	if s.timer != nil {
 		s.timer.Stop()
 	}
 
-	// remember previous state
 	prev := s.sensor.State
 
 	// apply new state

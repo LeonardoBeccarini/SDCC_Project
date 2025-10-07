@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: fog-latency
+  namespace: monitoring
+spec:
+  jobName: blackbox-fog
+  module: tcp_connect
+  prober:
+
+    url: blackbox-prometheus-blackbox-exporter.monitoring.svc.cluster.local:9115
+    path: /probe
+  targets:
+    staticConfig:
+      static:
+        - event-service.fog.svc.cluster.local:8080
+
+

@@ -3,7 +3,6 @@ from flask import Flask, render_template
 
 app = Flask(__name__)
 
-# Gateway base URL (es. http://gateway:5009 o https://<env>.elasticbeanstalk.com)
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway:5009").rstrip("/")
 
 DASHBOARD_DATA_PATH = "/dashboard/data"
@@ -50,5 +49,5 @@ def healthz():
     return "ok", 200
 
 if __name__ == "__main__":
-    # Porta 8080 per compatibilità con Elastic Beanstalk (Docker platform)
+    # Porta 8080 per compatibilità con Elastic Beanstalk
     app.run(host="0.0.0.0", port=8080)

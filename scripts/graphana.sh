@@ -12,7 +12,7 @@ OPEN_BROWSER="${OPEN_BROWSER:-1}"   # 1 = prova ad aprire il browser
 # --- Opzioni extra (token + export) ---
 MAKE_TOKEN="${MAKE_TOKEN:-0}"           # 1 = crea un API token e lo stampa
 TOKEN_NAME="${TOKEN_NAME:-sdcc-token}"  # nome del token
-TOKEN_ROLE="${TOKEN_ROLE:-Admin}"       # Viewer | Editor | Admin
+TOKEN_ROLE="${TOKEN_ROLE:-Admin}"
 
 EXPORT_UID="${EXPORT_UID:-}"            # se valorizzato, esporta dashboard con questo UID
 EXPORT_FILE="${EXPORT_FILE:-dashboard.json}"
@@ -42,7 +42,7 @@ echo "  -> $TARGET"
 # libera la porta locale
 lsof -ti :"$PORT" | xargs -r kill || true
 
-# determina la porta del Service (di solito 80)
+# determina la porta del Service
 if [[ "$TARGET" == service/* ]]; then
   SVC="${TARGET#service/}"
   SVC_PORT="$(kubectl -n "$NS" get svc "$SVC" -o jsonpath='{.spec.ports[0].port}')"
@@ -72,7 +72,6 @@ echo "Grafana pronto su:  http://localhost:$PORT"
 echo "Credenziali:       $USER / $PASS"
 echo
 
-# --- Crea API token (opzionale) ---
 if [[ "$MAKE_TOKEN" == "1" ]]; then
   log "Creo API token ($TOKEN_ROLE)…"
   TOK_JSON=$(curl -sS -u "${USER}:${PASS}" \
@@ -91,7 +90,6 @@ if [[ "$MAKE_TOKEN" == "1" ]]; then
   fi
 fi
 
-# --- Export dashboard per UID (opzionale) ---
 if [[ -n "$EXPORT_UID" ]]; then
   log "Esporto dashboard UID=$EXPORT_UID in $EXPORT_FILE …"
   curl -sS -u "${USER}:${PASS}" \

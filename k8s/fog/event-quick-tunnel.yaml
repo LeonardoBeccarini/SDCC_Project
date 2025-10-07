@@ -1,4 +1,3 @@
-# k8s/event-quick-tunnel.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,7 +22,7 @@ spec:
             - --url
             - http://event-service.fog.svc.cluster.local:8080
             - --metrics
-            - 0.0.0.0:2000   # opzionale: metriche
+            - 0.0.0.0:2000
           resources:
             requests: { cpu: "50m", memory: "64Mi" }
             limits:   { cpu: "200m", memory: "128Mi" }
