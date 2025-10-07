@@ -69,7 +69,6 @@ kubectl apply -n rabbitmq -f k8s/monitoring/manifests/rabbitmq-enabled-plugins-c
 kubectl apply -f "$K8S_DIR/rabbitmq/config-and-secrets.yaml"
 kubectl apply -f "$K8S_DIR/rabbitmq/service-headless.yaml"
 kubectl apply -f "$K8S_DIR/rabbitmq/service-internal.yaml"
-kubectl apply -f "$K8S_DIR/rabbitmq/service-nodeport.yaml"
 kubectl apply -f "$K8S_DIR/rabbitmq/statefulset.yaml"
 
 echo "==> Waiting for RabbitMQ (single replica) ..."
