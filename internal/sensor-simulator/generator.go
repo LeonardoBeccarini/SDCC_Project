@@ -71,7 +71,6 @@ func (g *DataGenerator) SeedFromSoilGrids(ctx context.Context, s *model.Sensor) 
 }
 
 // Next aggiorna lo stato interno e restituisce un SensorData.
-// QUI NON si fanno chiamate esterne.
 func (g *DataGenerator) Next(sensor *model.Sensor) (model.SensorData, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

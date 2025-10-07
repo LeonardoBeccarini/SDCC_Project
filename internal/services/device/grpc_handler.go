@@ -27,7 +27,7 @@ type GrpcHandler struct {
 	makePublisher PublisherFactory
 	fields        map[string]model.Field
 
-	// template topic per StateChange (già usato)
+	// template topic per StateChange
 	topicTemplate string // es. "event/StateChange/{field}/{sensor}"
 
 	//template Result

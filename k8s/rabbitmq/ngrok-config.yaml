@@ -12,5 +12,4 @@ data:
       mqtt:
         proto: tcp
         addr: rabbitmq.rabbitmq.svc.cluster.local:1883
-        # Se hai un "Reserved TCP Address" (consigliato prod), sbloccalo:
-        # remote_addr: 2.tcp.eu.ngrok.io:17003
+

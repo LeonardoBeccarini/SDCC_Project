@@ -16,10 +16,9 @@ type (
 	StateChangeEvent      = messages.StateChangeEvent      // evento cambio stato sensore
 	IrrigationResultEvent = messages.IrrigationResultEvent //evento esito irrigazione
 
-	Sensor           = entities.Sensor
-	Field            = entities.Field
-	State            = entities.SensorState // stato del dispositivo (se definito in entities)
-	IrrigationPolicy = entities.IrrigationPolicy
+	Sensor = entities.Sensor
+	Field  = entities.Field
+	State  = entities.SensorState // stato del dispositivo (se definito in entities)
 )
 
 // --- Costanti di stato (se presenti in entities) ---
