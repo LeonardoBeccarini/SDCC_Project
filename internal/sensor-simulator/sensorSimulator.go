@@ -81,9 +81,6 @@ func (s *SensorSimulator) handleMessage(_ string, msg mqtt.Message) error {
 	if err := json.Unmarshal(msg.Payload(), &evt); err != nil {
 		return fmt.Errorf("invalid StateChangeEvent: %w", err)
 	}
-	if err := json.Unmarshal(msg.Payload(), &evt); err != nil {
-		return fmt.Errorf("invalid StateChangeEvent: %w", err)
-	}
 	if evt.SensorID != s.sensor.ID {
 		// ignore events for other sensors
 		return nil
